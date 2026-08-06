@@ -87,6 +87,19 @@ deploy/
 - 页面保留最近 300 条，支持暂停、清空和按级别筛选。
 - 客户端断开时及时取消上游请求，避免协程泄漏。
 
+### 4.7 运行模式切换
+
+- 总览展示当前运行模式（直连/规则/全局），并提供下拉选择。
+- 选择后调用 `PATCH /api/mode`，展示 loading/success/error/offline 状态。
+- 切换期间禁用控件，避免重复提交与轮询覆盖。
+
+### 4.8 策略组/节点选择
+
+- 新增“出站”页面，调用 `GET /api/proxies` 展示策略组、当前节点和可选节点。
+- 点击节点调用 `PUT /api/proxies/{group}` 切换，操作中禁用该组全部节点按钮。
+- 组名与节点名支持中文、空格、斜杠等特殊字符，统一 URL 编码。
+- 覆盖空列表、mihomo 离线、请求错误与切换中四种状态。
+
 ## 5. 后端 API
 
 路径可做小幅调整，但语义和保护要求不变：
@@ -96,6 +109,9 @@ POST   /api/auth/login
 GET    /api/auth/session
 POST   /api/auth/logout
 GET    /api/overview
+PATCH  /api/mode
+GET    /api/proxies
+PUT    /api/proxies/{group}
 POST   /api/service/{start|stop|restart}
 GET    /api/config
 PUT    /api/config
@@ -141,7 +157,7 @@ MIHOMO_SERVICE=mihomo.service
 - 安静、紧凑的运维工具风格，不做营销首页和装饰性大卡片。
 - 桌面端左侧导航，移动端顶部栏 + 可展开导航。
 - 主色控制在中性灰、蓝绿状态色、红色危险操作，不使用单一深蓝或紫色主题。
-- 页面包括：总览、入站、配置、日志。
+- 页面包括：总览、出站、入站、配置、日志。
 - 交互必须有 loading、empty、offline、success、error 状态；按钮执行期间禁用，避免重复提交。
 - 危险动作需要明确确认对话框。
 
@@ -163,6 +179,7 @@ MIHOMO_SERVICE=mihomo.service
 - `go vet ./...` 通过。
 - `go build ./cmd/mpanel` 通过。
 - 提供 README、`.env.example`、示例 mihomo 配置、systemd unit 和最小 Caddy 反代示例。
+- 前端模式切换与策略组/节点选择的 loading、success、error、offline、empty 状态齐全且无回归。
 - 不提交二进制、依赖缓存、真实密码或 secret。
 
 ## 9. 验收标准
@@ -175,8 +192,10 @@ MIHOMO_SERVICE=mihomo.service
 6. 模拟热重载失败后原文件恢复为保存前内容。
 7. listener 增删改后 YAML 其他内容不丢失，并触发与完整配置相同的安全保存流程。
 8. 日志流断开和重连正常，不泄露 mihomo secret。
-9. 桌面宽度 1440px 和移动宽度 390px 下无横向溢出、文本遮挡或不可操作控件。
-10. 所有自动测试、vet 和构建通过，文档可让 Debian/Ubuntu VPS 用户完成部署。
+9. 总览可切换直连/规则/全局模式，切换过程中有 loading/error 反馈，离线时明确提示。
+10. “出站”页面展示策略组、当前节点与可选节点；点击节点可切换，空/离线/错误/切换中状态均正常呈现，组名与节点名中的中文、空格、斜杠等字符可正确读写。
+11. 桌面宽度 1440px 和移动宽度 390px 下无横向溢出、文本遮挡或不可操作控件。
+12. 所有自动测试、vet 和构建通过，文档可让 Debian/Ubuntu VPS 用户完成部署。
 
 ## 10. 暂不实现
 
@@ -184,7 +203,7 @@ MIHOMO_SERVICE=mihomo.service
 - 用户计费、配额、到期时间、订阅分发。
 - 自动申请 TLS 证书、DDNS、Telegram 通知。
 - mihomo 自动下载或自更新。
-- 出站节点、策略组、规则的完整可视化编辑器。
+- 出站节点、策略组、规则的完整可视化编辑器（已实现策略组节点切换，暂不做完整规则编辑）。
 - Docker 内直接控制宿主机 systemd 的部署模式。
 
 这些功能可在 MVP 稳定后按实际个人使用需求增量加入。
