@@ -1,0 +1,18 @@
+mixed-port: 7890
+allow-lan: false
+mode: rule
+log-level: info
+external-controller: 127.0.0.1:9090
+# 与服务环境中的 MIHOMO_API_SECRET 保持一致；部署时替换。
+secret: replace-with-a-random-secret
+
+listeners:
+  - name: local-socks
+    type: socks
+    listen: 127.0.0.1
+    port: 1080
+
+proxies: []
+proxy-groups: []
+rules:
+  - MATCH,DIRECT
