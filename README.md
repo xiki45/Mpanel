@@ -2,7 +2,7 @@
 
 MPanel 是面向个人 Linux VPS 的轻量 mihomo 运维面板。它由单个 Go 进程提供 API 和嵌入式中文界面，不需要 Node.js 或数据库。
 
-功能包括：24 小时签名会话、运行状态总览、systemd 启停、完整 YAML 安全保存与回滚、最近 5 份备份、listener 可视化增删改，以及 mihomo 结构化日志 SSE 转发。
+功能包括：24 小时签名会话、运行状态总览、systemd 启停、运行模式（直连/规则/全局）切换、策略组与节点选择、完整 YAML 安全保存与回滚、最近 5 份备份、listener 可视化增删改，以及 mihomo 结构化日志 SSE 转发。
 
 ## 构建
 
@@ -69,6 +69,13 @@ Caddy 自动处理 TLS。MPanel 信任本机反代发送的 `X-Forwarded-Proto` 
 
 敏感值只存在于服务环境中，不会发往浏览器。修改 API 只接受 JSON，并拒绝非同源浏览器请求；没有 `Origin` 的请求允许用于本机 CLI 运维。
 
+模式切换与策略组选择通过 mihomo 控制 API 修改运行状态，不会改写 YAML。若需要在 mihomo 重启后保留策略组选择，请在 mihomo 配置中启用：
+
+```yaml
+profile:
+  store-selected: true
+```
+
 ## 配置事务
 
 每次完整 YAML 保存、listener 变更或备份恢复都执行同一流程：
@@ -80,6 +87,36 @@ Caddy 自动处理 TLS。MPanel 信任本机反代发送的 `X-Forwarded-Proto` 
 5. 热重载失败时恢复原字节，并尝试重新加载旧配置。
 
 listener 编辑使用 `yaml.v3` 节点树，未知顶层字段和未知 listener 字段会保留。备份文件位于配置同目录，命名形式为 `config.yaml.bak.<UTC 时间戳>`，自动保留最近 5 份。
+
+## 管理 API
+
+面板自身提供一套需登录的 JSON API，前端通过它们管理 mihomo：
+
+```text
+POST   /api/auth/login
+GET    /api/auth/session
+POST   /api/auth/logout
+GET    /api/overview
+PATCH  /api/mode                 # 切换运行模式
+GET    /api/proxies              # 读取策略组与可选节点
+PUT    /api/proxies/{group}      # 选择策略组当前节点
+POST   /api/service/{start|stop|restart}
+GET    /api/config
+PUT    /api/config
+GET    /api/config/backups
+POST   /api/config/backups/{id}/restore
+GET    /api/listeners
+POST   /api/listeners
+PUT    /api/listeners/{name}
+DELETE /api/listeners/{name}
+GET    /api/logs/stream
+GET    /healthz
+```
+
+- `PATCH /api/mode` 请求体为 `{"mode":"rule"}`（`rule`/`global`/`direct`），成功返回 `{"ok":true,"mode":"rule"}`。
+- `GET /api/proxies` 返回 `{"proxies":{<组名>:{type,now,all:[...]}}}`，其中 `<组名>` 为代理/策略组名，`all` 为该策略组可选节点列表。
+- `PUT /api/proxies/{group}` 请求体为 `{"name":"<节点名>"}`，成功返回 `{"ok":true}`；组名与节点名中的中文、空格、斜杠等字符均需 URL 编码。
+- 错误统一返回 `{"error":"human-readable message"}`。
 
 ## 健康检查与排障
 
