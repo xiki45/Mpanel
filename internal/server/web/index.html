@@ -7,13 +7,18 @@
 </section>
 <div id="app" class="shell hidden">
   <header class="mobile-header"><button id="menu-button" class="icon" title="展开导航" aria-label="展开导航">☰</button><div class="brand"><span>M</span>Panel</div><i id="mobile-status" class="dot offline"></i></header>
-  <aside id="sidebar"><div class="brand desktop"><span>M</span>Panel</div><nav><button data-page="overview" class="active">总览</button><button data-page="listeners">入站</button><button data-page="config">配置</button><button data-page="logs">日志</button></nav><button id="logout" class="logout">退出登录</button></aside>
+  <aside id="sidebar"><div class="brand desktop"><span>M</span>Panel</div><nav><button data-page="overview" class="active">总览</button><button data-page="proxies">出站</button><button data-page="listeners">入站</button><button data-page="config">配置</button><button data-page="logs">日志</button></nav><button id="logout" class="logout">退出登录</button></aside>
   <main>
     <header class="page-head"><div><h1 id="page-title">总览</h1><p id="page-subtitle">mihomo 实时运行状态</p></div><span id="toast" class="toast hidden"></span></header>
     <section id="page-overview" class="page active">
       <div id="offline-banner" class="offline-banner hidden"><strong>mihomo 离线</strong><span id="offline-message">无法获取运行数据</span></div>
-      <div class="status-strip"><div><small>服务状态</small><strong id="online"><i class="dot"></i>载入中</strong></div><div><small>版本</small><strong id="version">--</strong></div><div><small>运行模式</small><strong id="mode">--</strong></div><div class="actions"><button data-action="start">启动</button><button data-action="restart">重启</button><button class="danger" data-action="stop">停止</button></div></div>
+      <div class="status-strip"><div><small>服务状态</small><strong id="online"><i class="dot"></i>载入中</strong></div><div><small>版本</small><strong id="version">--</strong></div><div><small>运行模式</small><span class="mode-control" id="mode-control"><select id="mode" aria-label="运行模式"><option value="rule">规则</option><option value="global">全局</option><option value="direct">直连</option></select><span id="mode-state" class="mode-state">--</span></span></div><div class="actions"><button data-action="start">启动</button><button data-action="restart">重启</button><button class="danger" data-action="stop">停止</button></div></div>
       <div class="metrics"><article><small>当前上传</small><strong id="upload">--</strong></article><article><small>当前下载</small><strong id="download">--</strong></article><article><small>累计上传</small><strong id="total-upload">--</strong></article><article><small>累计下载</small><strong id="total-download">--</strong></article><article><small>内存占用</small><strong id="memory">--</strong></article><article><small>活跃连接</small><strong id="connections">--</strong></article></div>
+    </section>
+    <section id="page-proxies" class="page">
+      <div id="proxies-offline" class="offline-banner hidden"><strong>mihomo 离线</strong><span id="proxies-offline-message">无法获取策略组数据</span></div>
+      <div class="toolbar"><span id="proxy-count">载入中</span><button id="refresh-proxies">刷新</button></div>
+      <div id="proxies-body" class="proxies-body"><p class="empty">载入中…</p></div>
     </section>
     <section id="page-listeners" class="page"><div class="toolbar"><span id="listener-count">载入中</span><button id="add-listener" class="primary">＋ 新增入站</button></div><div class="table-wrap"><table><thead><tr><th>名称</th><th>类型</th><th>监听地址</th><th>端口</th><th></th></tr></thead><tbody id="listener-body"></tbody></table><div id="listener-empty" class="empty hidden">尚未配置入站</div></div></section>
     <section id="page-config" class="page"><div class="toolbar"><span>直接编辑完整 mihomo YAML</span><button id="save-config" class="primary">保存并重载</button></div><textarea id="config-editor" class="editor" spellcheck="false" aria-label="mihomo YAML 配置"></textarea><div class="backup-head"><h2>最近备份</h2><button id="refresh-backups">刷新</button></div><div id="backup-list" class="backup-list"></div></section>
