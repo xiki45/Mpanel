@@ -1,0 +1,21 @@
+[Unit]
+Description=MPanel mihomo management panel
+After=network-online.target mihomo.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+EnvironmentFile=/etc/mpanel/mpanel.env
+ExecStart=/usr/local/bin/mpanel
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/etc/mihomo
+
+[Install]
+WantedBy=multi-user.target
