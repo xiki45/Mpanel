@@ -27,6 +27,9 @@ type Mihomo interface {
 	Overview(context.Context) mihomo.Overview
 	Reload(context.Context) error
 	StreamLogs(context.Context, func([]byte) error) error
+	Proxies(context.Context) (map[string]mihomo.Proxy, error)
+	SetMode(context.Context, string) error
+	SelectProxy(context.Context, string, string) error
 }
 
 type Server struct {
@@ -65,6 +68,9 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("PUT /api/listeners/{name}", s.protected(s.mutation(http.HandlerFunc(s.updateListener))))
 	mux.Handle("DELETE /api/listeners/{name}", s.protected(s.mutation(http.HandlerFunc(s.deleteListener))))
 	mux.Handle("GET /api/logs/stream", s.protected(http.HandlerFunc(s.logs)))
+	mux.Handle("GET /api/proxies", s.protected(http.HandlerFunc(s.getProxies)))
+	mux.Handle("PATCH /api/mode", s.protected(s.mutation(http.HandlerFunc(s.patchMode))))
+	mux.Handle("PUT /api/proxies/{group}", s.protected(s.mutation(http.HandlerFunc(s.selectProxy))))
 	mux.Handle("/", http.HandlerFunc(s.static))
 	return securityHeaders(limitBody(mux))
 }
@@ -165,6 +171,80 @@ func (s *Server) overview(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 	jsonResponse(w, 200, s.mihomo.Overview(ctx))
+}
+
+// allowedModes are the only runtime modes the panel exposes.
+var allowedModes = map[string]bool{"direct": true, "rule": true, "global": true}
+
+// maxPathParam bounds the decoded length of path parameters to avoid abuse.
+const maxPathParam = 128
+
+func (s *Server) getProxies(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+	proxies, err := s.mihomo.Proxies(ctx)
+	if err != nil {
+		errorResponse(w, 502, "无法读取代理")
+		return
+	}
+	jsonResponse(w, 200, map[string]any{"proxies": proxies})
+}
+
+func (s *Server) patchMode(w http.ResponseWriter, r *http.Request) {
+	var input struct {
+		Mode string `json:"mode"`
+	}
+	if !decodeJSON(w, r, &input) {
+		return
+	}
+	if !allowedModes[input.Mode] {
+		errorResponse(w, 400, "模式只允许 direct、rule 或 global")
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+	if err := s.mihomo.SetMode(ctx, input.Mode); err != nil {
+		errorResponse(w, 502, "切换模式失败")
+		return
+	}
+	jsonResponse(w, 200, map[string]any{"ok": true, "mode": input.Mode})
+}
+
+func (s *Server) selectProxy(w http.ResponseWriter, r *http.Request) {
+	group, err := decodePathParam(w, r, "group", "代理组")
+	if err != nil {
+		return
+	}
+	var input struct {
+		Name string `json:"name"`
+	}
+	if !decodeJSON(w, r, &input) {
+		return
+	}
+	if input.Name == "" || len(input.Name) > maxPathParam {
+		errorResponse(w, 400, "节点名称不能为空且不能过长")
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+	if err := s.mihomo.SelectProxy(ctx, group, input.Name); err != nil {
+		errorResponse(w, 502, "切换节点失败")
+		return
+	}
+	jsonResponse(w, 200, map[string]bool{"ok": true})
+}
+
+// decodePathParam validates a path value already percent-decoded by the router
+// (Go's ServeMux unescapes {key} wildcards) and enforces presence and a
+// reasonable length. It writes the error response and returns an error when the
+// value is invalid.
+func decodePathParam(w http.ResponseWriter, r *http.Request, key, label string) (string, error) {
+	value := r.PathValue(key)
+	if value == "" || len(value) > maxPathParam {
+		errorResponse(w, 400, label+"不能为空且不能过长")
+		return "", errors.New("invalid path param")
+	}
+	return value, nil
 }
 func (s *Server) serviceAction(w http.ResponseWriter, r *http.Request) {
 	if err := s.service.Action(r.Context(), r.PathValue("action")); err != nil {
