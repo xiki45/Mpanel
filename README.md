@@ -16,9 +16,61 @@ go build -trimpath -o mpanel ./cmd/mpanel
 
 前端通过 `embed` 编入二进制，不需要额外复制静态资源。
 
-## Debian / Ubuntu 部署
+## 一键安装（Debian / Ubuntu）
 
-1. 已安装并由 `mihomo.service` 托管 mihomo，且配置中的 `external-controller` 只监听本机，例如 `127.0.0.1:9090`。
+项目自带 `install.sh`，支持 root 系统级安装和普通用户级安装，自动配置 systemd 和环境变量。
+
+### Root 系统级安装（推荐）
+
+```bash
+git clone https://github.com/xiki45/Mpanel.git
+cd Mpanel
+sudo bash install.sh
+```
+
+脚本会自动：
+- 从源码编译二进制（需要 Go 1.23+）或下载预编译版本
+- 安装到 `/usr/local/bin/mpanel`
+- 生成 `/etc/mpanel/mpanel.env`（随机密码 + 会话密钥）
+- 创建 `/etc/systemd/system/mpanel.service`（含安全加固）
+- 启动并启用 mpanel.service
+
+### 普通用户级安装
+
+```bash
+git clone https://github.com/xiki45/Mpanel.git
+cd Mpanel
+bash install.sh
+```
+
+普通用户模式下：
+- 二进制安装到 `~/.local/bin/mpanel`
+- 配置生成到 `~/.config/mpanel/mpanel.env`
+- systemd 用户级 service，自动启用 lingering 保持后台运行
+
+### 同时安装 mihomo
+
+如果服务器尚未安装 mihomo，可加 `--install-mihomo` 选项：
+
+```bash
+sudo bash install.sh --install-mihomo
+```
+
+### 卸载
+
+```bash
+# root 安装的卸载
+sudo bash install.sh --uninstall
+
+# 用户级安装的卸载
+bash install.sh --uninstall
+```
+
+### 手动安装（替代方案）
+
+如果不想使用一键脚本，可手动部署：
+
+1. 确保已安装并由 `mihomo.service` 托管 mihomo，且配置中的 `external-controller` 只监听本机，例如 `127.0.0.1:9090`。
 2. 将构建好的二进制安装为 `/usr/local/bin/mpanel`。
 3. 创建 `/etc/mpanel/mpanel.env`，权限设为仅 root 可读，并参照 `.env.example` 配置。
 4. 安装 `deploy/mpanel.service` 到 `/etc/systemd/system/mpanel.service`。
@@ -34,13 +86,13 @@ sudo systemctl enable --now mpanel.service
 sudo systemctl status mpanel.service
 ```
 
-编辑 `/etc/mpanel/mpanel.env` 后再启动。可用以下命令生成会话密钥：
+可用以下命令生成会话密钥：
 
 ```bash
 openssl rand -base64 48
 ```
 
-服务以 root 运行是因为 MVP 需要执行固定参数的 `systemctl` 并原子替换 `/etc/mihomo/config.yaml`。systemd unit 使用了文件系统隔离，并只开放 `/etc/mihomo` 写权限。配置目录应位于同一文件系统，确保临时文件与目标文件间的 `rename` 是原子的。
+Root 系统级安装的 service 以 root 运行，因为需要执行 `systemctl` 并原子替换 `/etc/mihomo/config.yaml`。systemd unit 使用了 `ProtectSystem=strict` 等安全加固，仅开放 `/etc/mihomo` 写权限。普通用户级安装则运行在用户权限下，无系统级加固。
 
 ## TLS 反向代理
 
