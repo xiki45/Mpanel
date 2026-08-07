@@ -354,6 +354,293 @@ func TestAtomicRollbackPreservesFileMetadata(t *testing.T) {
 	}
 }
 
+func TestValidateListenerVless(t *testing.T) {
+	ctx := context.Background()
+	newBase := func() *Manager {
+		m := newManager(t, "mode: rule\nlisteners: []\n", &fakeValidator{}, &fakeReloader{})
+		return m
+	}
+
+	base := func() Listener {
+		return Listener{
+			Name: "v1", Type: "vless", Listen: "0.0.0.0", Port: 443,
+			Vless: &Vless{Users: []VlessUser{{Username: "u", UUID: "11111111-1111-1111-1111-111111111111"}}},
+		}
+	}
+
+	t.Run("no users", func(t *testing.T) {
+		m := newBase()
+		l := base()
+		l.Vless.Users = nil
+		if err := m.CreateListener(ctx, l); err == nil {
+			t.Fatal("expected error for vless with no users")
+		}
+	})
+	t.Run("empty uuid", func(t *testing.T) {
+		m := newBase()
+		l := base()
+		l.Vless.Users = []VlessUser{{Username: "u", UUID: ""}}
+		if err := m.CreateListener(ctx, l); err == nil {
+			t.Fatal("expected error for vless user with empty uuid")
+		}
+	})
+	t.Run("reality missing dest", func(t *testing.T) {
+		m := newBase()
+		l := base()
+		l.Vless.Reality = &Reality{PrivateKey: "k", ShortIds: []string{"a"}, ServerNames: []string{"example.com"}}
+		if err := m.CreateListener(ctx, l); err == nil {
+			t.Fatal("expected error for reality missing dest")
+		}
+	})
+	t.Run("reality missing private-key", func(t *testing.T) {
+		m := newBase()
+		l := base()
+		l.Vless.Reality = &Reality{Dest: "example.com:443", ShortIds: []string{"a"}, ServerNames: []string{"example.com"}}
+		if err := m.CreateListener(ctx, l); err == nil {
+			t.Fatal("expected error for reality missing private-key")
+		}
+	})
+	t.Run("reality missing short-id", func(t *testing.T) {
+		m := newBase()
+		l := base()
+		l.Vless.Reality = &Reality{Dest: "example.com:443", PrivateKey: "k", ServerNames: []string{"example.com"}}
+		if err := m.CreateListener(ctx, l); err == nil {
+			t.Fatal("expected error for reality missing short-id")
+		}
+	})
+	t.Run("reality missing server-names", func(t *testing.T) {
+		m := newBase()
+		l := base()
+		l.Vless.Reality = &Reality{Dest: "example.com:443", PrivateKey: "k", ShortIds: []string{"a"}}
+		if err := m.CreateListener(ctx, l); err == nil {
+			t.Fatal("expected error for reality missing server-names")
+		}
+	})
+	t.Run("valid vless accepted", func(t *testing.T) {
+		m := newBase()
+		l := base()
+		l.Vless.Reality = &Reality{Dest: "example.com:443", PrivateKey: "k", ShortIds: []string{"a"}, ServerNames: []string{"example.com"}}
+		if err := m.CreateListener(ctx, l); err != nil {
+			t.Fatalf("valid vless rejected: %v", err)
+		}
+	})
+	t.Run("vless without Vless struct allowed", func(t *testing.T) {
+		m := newBase()
+		l := base()
+		l.Vless = nil
+		if err := m.CreateListener(ctx, l); err != nil {
+			t.Fatalf("vless without Vless struct should be allowed: %v", err)
+		}
+	})
+}
+
+func TestListenersReadDoesNotValidateVless(t *testing.T) {
+	// Historical config with an incomplete VLESS block must still be readable
+	// (read-only path bypasses validateListener).
+	initial := "mode: rule\nlisteners:\n  - name: v\n    type: vless\n    listen: 0.0.0.0\n    port: 443\n    users: []\n"
+	m := newManager(t, initial, &fakeValidator{}, &fakeReloader{})
+	if _, err := m.Listeners(); err != nil {
+		t.Fatalf("read-only Listeners must not validate vless: %v", err)
+	}
+}
+
+const vlessRealityInitial = `mode: rule
+listeners:
+  - name: vless-r
+    type: vless
+    listen: 0.0.0.0
+    port: 443
+    network: tcp
+    users:
+      - username: alice
+        uuid: 11111111-1111-1111-1111-111111111111
+        flow: xtls-rprx-vision
+        client-fingerprint: chrome
+      - username: bob
+        uuid: 22222222-2222-2222-2222-222222222222
+    reality-config:
+      dest: example.com:443
+      private-key: abcdefprivatekey
+      short-id:
+        - 123456
+        - abcdef
+      server-names:
+        - example.com
+      show: true
+      min-ver: 1.2
+`
+
+func TestVlessListenerReadsStructuredFields(t *testing.T) {
+	m := newManager(t, vlessRealityInitial, &fakeValidator{}, &fakeReloader{})
+	items, err := m.Listeners()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("expected 1 listener, got %d", len(items))
+	}
+	l := items[0]
+	if l.Vless == nil {
+		t.Fatal("vless field not parsed")
+	}
+	if len(l.Vless.Users) != 2 {
+		t.Fatalf("expected 2 users, got %d", len(l.Vless.Users))
+	}
+	if l.Vless.Users[0].Username != "alice" || l.Vless.Users[0].UUID != "11111111-1111-1111-1111-111111111111" || l.Vless.Users[0].Flow != "xtls-rprx-vision" {
+		t.Fatalf("first user wrong: %+v", l.Vless.Users[0])
+	}
+	if !strings.Contains(l.Vless.Users[0].ExtraYAML, "client-fingerprint") {
+		t.Fatalf("unknown user field lost: %q", l.Vless.Users[0].ExtraYAML)
+	}
+	r := l.Vless.Reality
+	if r == nil {
+		t.Fatal("reality not parsed")
+	}
+	if r.Dest != "example.com:443" || r.PrivateKey != "abcdefprivatekey" {
+		t.Fatalf("reality scalar fields wrong: %+v", r)
+	}
+	if len(r.ShortIds) != 2 || r.ShortIds[0] != "123456" || r.ShortIds[1] != "abcdef" {
+		t.Fatalf("short-ids wrong: %+v", r.ShortIds)
+	}
+	if len(r.ServerNames) != 1 || r.ServerNames[0] != "example.com" {
+		t.Fatalf("server-names wrong: %+v", r.ServerNames)
+	}
+	if !strings.Contains(r.ExtraYAML, "show: true") || !strings.Contains(r.ExtraYAML, "min-ver:") {
+		t.Fatalf("unknown reality fields lost: %q", r.ExtraYAML)
+	}
+	if !strings.Contains(l.ExtraYAML, "network:") {
+		t.Fatalf("listener-specific field network was not kept in ExtraYAML: %q", l.ExtraYAML)
+	}
+	if strings.Contains(l.ExtraYAML, "reality-config") || strings.Contains(l.ExtraYAML, "users:") {
+		t.Fatalf("structured vless fields leaked into ExtraYAML: %q", l.ExtraYAML)
+	}
+}
+
+func TestVlessRealityRoundTripPreservesUnknownFields(t *testing.T) {
+	m := newManager(t, vlessRealityInitial, &fakeValidator{}, &fakeReloader{})
+	items, err := m.Listeners()
+	if err != nil {
+		t.Fatal(err)
+	}
+	l := items[0]
+	// Edit reality: add a server name, drop the second short-id.
+	l.Vless.Reality.ServerNames = []string{"example.com", "alt.example.com"}
+	l.Vless.Reality.ShortIds = []string{"123456"}
+	if err := m.UpdateListener(context.Background(), "vless-r", l); err != nil {
+		t.Fatal(err)
+	}
+	data, _ := os.ReadFile(m.Path)
+	text := string(data)
+	for _, want := range []string{
+		"show: true", "min-ver:", "client-fingerprint", "alt.example.com",
+		"private-key: abcdefprivatekey", "short-id:", "network:",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("missing %q after round trip:\n%s", want, text)
+		}
+	}
+	// Re-read and verify the structured view is consistent.
+	items, _ = m.Listeners()
+	l2 := items[0]
+	if len(l2.Vless.Reality.ServerNames) != 2 || l2.Vless.Reality.ServerNames[1] != "alt.example.com" {
+		t.Fatalf("server-names not updated: %+v", l2.Vless.Reality.ServerNames)
+	}
+	if len(l2.Vless.Reality.ShortIds) != 1 || l2.Vless.Reality.ShortIds[0] != "123456" {
+		t.Fatalf("short-ids not updated: %+v", l2.Vless.Reality.ShortIds)
+	}
+	if !strings.Contains(l2.Vless.Reality.ExtraYAML, "show:") {
+		t.Fatalf("unknown reality field lost on update: %q", l2.Vless.Reality.ExtraYAML)
+	}
+}
+
+func TestVlessRealityDeleteRemovesBlock(t *testing.T) {
+	m := newManager(t, vlessRealityInitial, &fakeValidator{}, &fakeReloader{})
+	items, err := m.Listeners()
+	if err != nil {
+		t.Fatal(err)
+	}
+	l := items[0]
+	l.Vless.Reality = nil
+	if err := m.UpdateListener(context.Background(), "vless-r", l); err != nil {
+		t.Fatal(err)
+	}
+	data, _ := os.ReadFile(m.Path)
+	text := string(data)
+	if strings.Contains(text, "reality-config") {
+		t.Fatalf("reality-config was not removed:\n%s", text)
+	}
+	if !strings.Contains(text, "users:") || !strings.Contains(text, "11111111-1111-1111-1111-111111111111") {
+		t.Fatalf("users were lost when reality removed:\n%s", text)
+	}
+}
+
+func TestVlessRealityAddFromScratch(t *testing.T) {
+	initial := "mode: rule\nlisteners:\n  - name: existing\n    type: vless\n    listen: 0.0.0.0\n    port: 8443\n"
+	m := newManager(t, initial, &fakeValidator{}, &fakeReloader{})
+	l := Listener{
+		Name: "vless-new", Type: "vless", Listen: "0.0.0.0", Port: 443,
+		Vless: &Vless{
+			Users: []VlessUser{{Username: "carol", UUID: "33333333-3333-3333-3333-333333333333"}},
+			Reality: &Reality{
+				Dest: "example.com:443", PrivateKey: "someprivatekey",
+				ShortIds: []string{"aabb"}, ServerNames: []string{"example.com"}, ExtraYAML: "extra-k: v\n",
+			},
+		},
+	}
+	if err := m.CreateListener(context.Background(), l); err != nil {
+		t.Fatal(err)
+	}
+	data, _ := os.ReadFile(m.Path)
+	text := string(data)
+	for _, want := range []string{"users:", "carol", "reality-config:", "dest: example.com:443", "short-id:", "server-names:", "extra-k: v"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("missing %q after create:\n%s", want, text)
+		}
+	}
+}
+
+func TestNonVlessIgnoresVless(t *testing.T) {
+	initial := "mode: rule\nlisteners:\n  - name: s\n    type: mixed\n    listen: 0.0.0.0\n    port: 7890\n"
+	m := newManager(t, initial, &fakeValidator{}, &fakeReloader{})
+	l := Listener{Name: "s", Type: "mixed", Listen: "0.0.0.0", Port: 7890, Vless: &Vless{Users: []VlessUser{{Username: "u", UUID: "x"}}}}
+	if err := m.UpdateListener(context.Background(), "s", l); err != nil {
+		t.Fatal(err)
+	}
+	data, _ := os.ReadFile(m.Path)
+	if strings.Contains(string(data), "users:") || strings.Contains(string(data), "uuid:") {
+		t.Fatalf("non-vless listener wrote vless fields:\n%s", data)
+	}
+	items, _ := m.Listeners()
+	if items[0].Vless != nil {
+		t.Fatal("non-vless listener exposed a vless field")
+	}
+}
+
+func TestNonVlessPreservesUsersInExtraYAML(t *testing.T) {
+	// A non-vless listener that happens to carry users/reality-config in YAML
+	// must keep them verbatim (not silently dropped), just outside the vless
+	// field.
+	initial := "mode: rule\nlisteners:\n  - name: s\n    type: mixed\n    listen: 0.0.0.0\n    port: 7890\n    users:\n      - username: u\n        uuid: x\n"
+	m := newManager(t, initial, &fakeValidator{}, &fakeReloader{})
+	items, err := m.Listeners()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if items[0].Vless != nil {
+		t.Fatal("non-vless listener exposed vless")
+	}
+	if !strings.Contains(items[0].ExtraYAML, "users:") || !strings.Contains(items[0].ExtraYAML, "username: u") {
+		t.Fatalf("users not preserved in ExtraYAML: %q", items[0].ExtraYAML)
+	}
+	if err := m.UpdateListener(context.Background(), "s", Listener{Name: "s", Type: "mixed", Listen: "0.0.0.0", Port: 7890, ExtraYAML: items[0].ExtraYAML}); err != nil {
+		t.Fatal(err)
+	}
+	data, _ := os.ReadFile(m.Path)
+	if !strings.Contains(string(data), "username: u") || !strings.Contains(string(data), "uuid: x") {
+		t.Fatalf("users lost on update of non-vless listener:\n%s", data)
+	}
+}
+
 func TestFailedReloadTransactionsPruneBackups(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yaml")
 	if err := os.WriteFile(path, []byte("mode: rule\n"), 0600); err != nil {

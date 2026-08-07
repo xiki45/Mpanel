@@ -74,6 +74,33 @@ type Listener struct {
 	Listen    string `json:"listen" yaml:"listen"`
 	Port      int    `json:"port" yaml:"port"`
 	ExtraYAML string `json:"extraYaml" yaml:"-"`
+	Vless     *Vless `json:"vless,omitempty" yaml:"-"`
+}
+
+// Vless is the structured VLESS listener configuration. The mihomo YAML stores
+// it under `users` and `reality-config`; those keys are extracted into this
+// struct when reading so the API can expose and edit them, while all other
+// listener-specific fields remain in ExtraYAML.
+type Vless struct {
+	Users   []VlessUser `json:"users,omitempty"`
+	Reality *Reality    `json:"reality,omitempty"`
+}
+
+type VlessUser struct {
+	Username  string `json:"username,omitempty"`
+	UUID      string `json:"uuid,omitempty"`
+	Flow      string `json:"flow,omitempty"`
+	ExtraYAML string `json:"extraYaml,omitempty"`
+}
+
+// Reality mirrors a mihomo `reality-config` block. Only the well-known fields
+// are structured; any other keys are preserved verbatim in ExtraYAML.
+type Reality struct {
+	Dest        string   `json:"dest,omitempty"`
+	PrivateKey  string   `json:"privateKey,omitempty"`
+	ShortIds    []string `json:"shortIds,omitempty"`
+	ServerNames []string `json:"serverNames,omitempty"`
+	ExtraYAML   string   `json:"extraYaml,omitempty"`
 }
 
 var listenerTypes = map[string]bool{"mixed": true, "http": true, "socks": true, "shadowsocks": true, "vmess": true, "vless": true, "trojan": true, "hysteria2": true}
@@ -424,6 +451,40 @@ func validateListener(l Listener) error {
 	if strings.TrimSpace(l.Listen) == "" {
 		return errors.New("监听地址不能为空")
 	}
+	if l.Type == "vless" && l.Vless != nil {
+		if err := validateVless(l.Vless); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// validateVless enforces the minimum VLESS structure required for a valid
+// service config. Note this only runs on create/update via validateListener;
+// historical configs read by Listeners do not pass through this validation.
+func validateVless(v *Vless) error {
+	if len(v.Users) == 0 {
+		return errors.New("VLESS 至少需要一个用户")
+	}
+	for i, u := range v.Users {
+		if strings.TrimSpace(u.UUID) == "" {
+			return fmt.Errorf("VLESS 用户 %d 的 UUID 不能为空", i+1)
+		}
+	}
+	if v.Reality != nil {
+		if strings.TrimSpace(v.Reality.Dest) == "" {
+			return errors.New("Reality 的 dest 不能为空")
+		}
+		if strings.TrimSpace(v.Reality.PrivateKey) == "" {
+			return errors.New("Reality 的 private-key 不能为空")
+		}
+		if len(v.Reality.ShortIds) == 0 {
+			return errors.New("Reality 的 short-id 不能为空")
+		}
+		if len(v.Reality.ServerNames) == 0 {
+			return errors.New("Reality 的 server-names 不能为空")
+		}
+	}
 	return nil
 }
 
@@ -433,10 +494,20 @@ func listenerFromNode(node *yaml.Node) (Listener, error) {
 	}
 	l := Listener{Name: scalarValue(node, "name"), Type: scalarValue(node, "type"), Listen: scalarValue(node, "listen")}
 	l.Port, _ = strconv.Atoi(scalarValue(node, "port"))
+	if l.Type == "vless" {
+		v, err := vlessFromNode(node)
+		if err != nil {
+			return Listener{}, err
+		}
+		l.Vless = v
+	}
 	extra := &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
 	for i := 0; i < len(node.Content); i += 2 {
 		key := node.Content[i].Value
 		if key != "name" && key != "type" && key != "listen" && key != "port" {
+			if l.Type == "vless" && (key == "users" || key == "reality-config") {
+				continue
+			}
 			extra.Content = append(extra.Content, node.Content[i], node.Content[i+1])
 		}
 	}
@@ -445,6 +516,92 @@ func listenerFromNode(node *yaml.Node) (Listener, error) {
 		l.ExtraYAML = strings.TrimSpace(string(data))
 	}
 	return l, nil
+}
+
+func vlessFromNode(node *yaml.Node) (*Vless, error) {
+	v := &Vless{}
+	if usersNode := mappingValue(node, "users"); usersNode != nil {
+		if usersNode.Kind != yaml.SequenceNode {
+			return nil, errors.New("vless users 必须是列表")
+		}
+		for _, u := range usersNode.Content {
+			user, err := vlessUserFromNode(u)
+			if err != nil {
+				return nil, err
+			}
+			v.Users = append(v.Users, user)
+		}
+	}
+	if rc := mappingValue(node, "reality-config"); rc != nil {
+		if rc.Kind != yaml.MappingNode {
+			return nil, errors.New("reality-config 必须是对象")
+		}
+		r, err := realityFromNode(rc)
+		if err != nil {
+			return nil, err
+		}
+		v.Reality = r
+	}
+	return v, nil
+}
+
+func vlessUserFromNode(node *yaml.Node) (VlessUser, error) {
+	if node.Kind != yaml.MappingNode {
+		return VlessUser{}, errors.New("vless user 必须是对象")
+	}
+	u := VlessUser{Username: scalarValue(node, "username"), UUID: scalarValue(node, "uuid"), Flow: scalarValue(node, "flow")}
+	extra := &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
+	for i := 0; i < len(node.Content); i += 2 {
+		key := node.Content[i].Value
+		if key != "username" && key != "uuid" && key != "flow" {
+			extra.Content = append(extra.Content, node.Content[i], node.Content[i+1])
+		}
+	}
+	if len(extra.Content) > 0 {
+		data, _ := yaml.Marshal(extra)
+		u.ExtraYAML = strings.TrimSpace(string(data))
+	}
+	return u, nil
+}
+
+func realityFromNode(node *yaml.Node) (*Reality, error) {
+	r := &Reality{}
+	if dest := mappingValue(node, "dest"); dest != nil {
+		r.Dest = dest.Value
+	}
+	if pk := mappingValue(node, "private-key"); pk != nil {
+		r.PrivateKey = pk.Value
+	}
+	if si := mappingValue(node, "short-id"); si != nil {
+		if si.Kind == yaml.SequenceNode {
+			for _, s := range si.Content {
+				r.ShortIds = append(r.ShortIds, s.Value)
+			}
+		} else {
+			r.ShortIds = append(r.ShortIds, si.Value)
+		}
+	}
+	if sn := mappingValue(node, "server-names"); sn != nil {
+		if sn.Kind == yaml.SequenceNode {
+			for _, s := range sn.Content {
+				r.ServerNames = append(r.ServerNames, s.Value)
+			}
+		} else {
+			r.ServerNames = append(r.ServerNames, sn.Value)
+		}
+	}
+	extra := &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
+	for i := 0; i < len(node.Content); i += 2 {
+		key := node.Content[i].Value
+		if key != "dest" && key != "private-key" && key != "short-id" && key != "server-names" {
+			extra.Content = append(extra.Content, node.Content[i], node.Content[i+1])
+		}
+	}
+	if len(extra.Content) > 0 {
+		data, _ := yaml.Marshal(extra)
+		r.ExtraYAML = strings.TrimSpace(string(data))
+	}
+	return r, nil
 }
 
 func listenerNode(l Listener, existing *yaml.Node) (*yaml.Node, error) {
@@ -480,7 +637,128 @@ func listenerNode(l Listener, existing *yaml.Node) (*yaml.Node, error) {
 			setNode(node, key, extra.Content[0].Content[i+1])
 		}
 	}
+	if l.Type == "vless" {
+		// users and reality-config are owned by the structured Vless field so
+		// they can be added, removed or edited without losing unknown keys.
+		deleteNodeKey(node, "users")
+		deleteNodeKey(node, "reality-config")
+		if l.Vless != nil {
+			if err := applyVlessToNode(node, l.Vless); err != nil {
+				return nil, err
+			}
+		}
+	}
 	return node, nil
+}
+
+func applyVlessToNode(node *yaml.Node, v *Vless) error {
+	if v.Users != nil {
+		users := &yaml.Node{Kind: yaml.SequenceNode, Tag: "!!seq"}
+		for _, u := range v.Users {
+			un, err := vlessUserNode(u)
+			if err != nil {
+				return err
+			}
+			users.Content = append(users.Content, un)
+		}
+		setNode(node, "users", users)
+	}
+	if v.Reality != nil {
+		rc, err := realityNode(v.Reality)
+		if err != nil {
+			return err
+		}
+		setNode(node, "reality-config", rc)
+	}
+	return nil
+}
+
+func vlessUserNode(u VlessUser) (*yaml.Node, error) {
+	n := &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
+	if u.Username != "" {
+		setScalar(n, "username", u.Username)
+	}
+	if u.UUID != "" {
+		setScalar(n, "uuid", u.UUID)
+	}
+	if u.Flow != "" {
+		setScalar(n, "flow", u.Flow)
+	}
+	if err := mergeExtraYAML(n, u.ExtraYAML, []string{"username", "uuid", "flow"}, "用户专属 YAML"); err != nil {
+		return nil, err
+	}
+	return n, nil
+}
+
+func realityNode(r *Reality) (*yaml.Node, error) {
+	n := &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
+	if r.Dest != "" {
+		setScalar(n, "dest", r.Dest)
+	}
+	if r.PrivateKey != "" {
+		setScalar(n, "private-key", r.PrivateKey)
+	}
+	if len(r.ShortIds) > 0 {
+		seq := &yaml.Node{Kind: yaml.SequenceNode, Tag: "!!seq"}
+		for _, s := range r.ShortIds {
+			seq.Content = append(seq.Content, &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: s})
+		}
+		setNode(n, "short-id", seq)
+	}
+	if len(r.ServerNames) > 0 {
+		seq := &yaml.Node{Kind: yaml.SequenceNode, Tag: "!!seq"}
+		for _, s := range r.ServerNames {
+			seq.Content = append(seq.Content, &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: s})
+		}
+		setNode(n, "server-names", seq)
+	}
+	if err := mergeExtraYAML(n, r.ExtraYAML, []string{"dest", "private-key", "short-id", "server-names"}, "reality 专属 YAML"); err != nil {
+		return nil, err
+	}
+	return n, nil
+}
+
+// mergeExtraYAML parses an ExtraYAML string into a mapping and merges its keys
+// into node, rejecting any key in reserved (owned by the structured fields).
+func mergeExtraYAML(node *yaml.Node, extraYAML string, reserved []string, label string) error {
+	if strings.TrimSpace(extraYAML) == "" {
+		return nil
+	}
+	var extra yaml.Node
+	if err := yaml.Unmarshal([]byte(extraYAML), &extra); err != nil {
+		return fmt.Errorf("%s 解析失败: %w", label, err)
+	}
+	if len(extra.Content) == 0 || extra.Content[0].Kind != yaml.MappingNode {
+		return fmt.Errorf("%s 必须是对象", label)
+	}
+	for i := 0; i < len(extra.Content[0].Content); i += 2 {
+		key := extra.Content[0].Content[i].Value
+		if contains(reserved, key) {
+			return fmt.Errorf("%s 不能覆盖通用字段 %s", label, key)
+		}
+		setNode(node, key, extra.Content[0].Content[i+1])
+	}
+	return nil
+}
+
+func deleteNodeKey(node *yaml.Node, key string) {
+	out := node.Content[:0]
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		if node.Content[i].Value == key {
+			continue
+		}
+		out = append(out, node.Content[i], node.Content[i+1])
+	}
+	node.Content = out
+}
+
+func contains(list []string, s string) bool {
+	for _, item := range list {
+		if item == s {
+			return true
+		}
+	}
+	return false
 }
 
 func isListenerCommonField(key string) bool {

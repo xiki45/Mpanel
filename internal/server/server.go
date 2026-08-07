@@ -18,6 +18,7 @@ import (
 	"mpanel/internal/auth"
 	configmanager "mpanel/internal/config"
 	"mpanel/internal/mihomo"
+	"mpanel/internal/share"
 )
 
 type Service interface {
@@ -67,6 +68,7 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("POST /api/listeners", s.protected(s.mutation(http.HandlerFunc(s.createListener))))
 	mux.Handle("PUT /api/listeners/{name}", s.protected(s.mutation(http.HandlerFunc(s.updateListener))))
 	mux.Handle("DELETE /api/listeners/{name}", s.protected(s.mutation(http.HandlerFunc(s.deleteListener))))
+	mux.Handle("GET /api/listeners/{name}/shares", s.protected(http.HandlerFunc(s.listenerShares)))
 	mux.Handle("GET /api/logs/stream", s.protected(http.HandlerFunc(s.logs)))
 	mux.Handle("GET /api/proxies", s.protected(http.HandlerFunc(s.getProxies)))
 	mux.Handle("PATCH /api/mode", s.protected(s.mutation(http.HandlerFunc(s.patchMode))))
@@ -88,7 +90,7 @@ func securityHeaders(next http.Handler) http.Handler {
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("X-Frame-Options", "DENY")
 		w.Header().Set("Referrer-Policy", "no-referrer")
-		w.Header().Set("Content-Security-Policy", "default-src 'self'; style-src 'self'; script-src 'self'; connect-src 'self'")
+		w.Header().Set("Content-Security-Policy", "default-src 'self'; style-src 'self'; script-src 'self'; connect-src 'self'; img-src 'self' data:")
 		next.ServeHTTP(w, r)
 	})
 }
@@ -335,6 +337,43 @@ func (s *Server) deleteListener(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	jsonResponse(w, 200, map[string]bool{"ok": true})
+}
+
+func (s *Server) listenerShares(w http.ResponseWriter, r *http.Request) {
+	name, err := url.PathUnescape(r.PathValue("name"))
+	if err != nil {
+		errorResponse(w, 400, "无效的入站名称")
+		return
+	}
+	host, err := share.ValidateHost(r.URL.Query().Get("host"))
+	if err != nil {
+		errorResponse(w, 400, safeError(err))
+		return
+	}
+	items, err := s.config.Listeners()
+	if err != nil {
+		errorResponse(w, 500, safeError(err))
+		return
+	}
+	var target configmanager.Listener
+	found := false
+	for _, item := range items {
+		if item.Name == name {
+			target = item
+			found = true
+			break
+		}
+	}
+	if !found {
+		errorResponse(w, 404, "入站不存在")
+		return
+	}
+	entries, err := share.Build(target, host)
+	if err != nil {
+		errorResponse(w, 400, safeError(err))
+		return
+	}
+	jsonResponse(w, 200, share.Result{Shares: entries})
 }
 
 func (s *Server) logs(w http.ResponseWriter, r *http.Request) {
