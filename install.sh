@@ -67,8 +67,8 @@ case "$ARCH" in
     *) die "不支持的架构: $ARCH（仅支持 amd64 和 arm64）" ;;
 esac
 
-OS_ID="$(. /etc/os-release 2>/dev/null && echo "$ID" || echo "")"
-OS_LIKE="$(. /etc/os-release 2>/dev/null && echo "$ID_LIKE" || echo "")"
+OS_ID="$(. /etc/os-release 2>/dev/null && echo "${ID:-}" || echo "")"
+OS_LIKE="$(. /etc/os-release 2>/dev/null && echo "${ID_LIKE:-}" || echo "")"
 if [[ "$OS_ID" != "debian" && "$OS_ID" != "ubuntu" ]] && ! echo "$OS_LIKE" | grep -qw debian; then
     warn "当前系统不是 Debian/Ubuntu，脚本可能不完全兼容。继续安装..."
 fi
