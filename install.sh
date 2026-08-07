@@ -312,58 +312,54 @@ do_install() {
 
     echo ""
 
-    # 2. 下载或编译二进制
+    # 2. 获取 MPanel 二进制（优先从 Release 下载，避免弱机编译）
     info "[2/6] 安装 MPanel 二进制..."
 
-    # 优先使用源码本地编译（如果源码存在且有 Go）
-    local src_dir="$SCRIPT_DIR"
-    local has_source="false"
-    if [[ -f "$src_dir/go.mod" ]] && [[ -f "$src_dir/cmd/mpanel/main.go" ]]; then
-        has_source="true"
+    local download_url=""
+    local api_resp
+
+    # 尝试从 GitHub Releases 获取预编译二进制
+    if api_resp="$(curl -fsSL "https://api.github.com/repos/xiki45/Mpanel/releases/latest" 2>/dev/null)"; then
+        download_url="$(echo "$api_resp" | grep -o "https://[^\"]*mpanel-linux-${ARCH}[^\"]*" | head -1)"
     fi
 
-    if [[ "$has_source" == "true" ]] && command -v go >/dev/null 2>&1; then
-        info "检测到源码和 Go，从源码编译..."
-        local tmpbin="/tmp/mpanel-build-$$"
-        if (cd "$src_dir" && CGO_ENABLED=0 go build -trimpath -o "$tmpbin" ./cmd/mpanel); then
-            install -d -m 0755 "$BIN_DIR"
-            install -m 0755 "$tmpbin" "$BIN_DIR/mpanel"
-            rm -f "$tmpbin"
-            ok "从源码编译安装完成"
-        else
-            die "源码编译失败，请检查 Go 环境"
-        fi
-    else
-        # 从 GitHub Releases 下载预编译二进制
-        local latest_url="https://github.com/xiki45/Mpanel/releases/latest"
-        local download_url=""
-
-        # 尝试获取最新 release 的下载链接
-        local api_resp
-        if api_resp="$(curl -fsSL "https://api.github.com/repos/xiki45/Mpanel/releases/latest" 2>/dev/null)"; then
-            download_url="$(echo "$api_resp" | grep -o "https://[^\"]*mpanel-linux-${ARCH}[^\"]*" | head -1)"
-        fi
-
-        if [[ -z "$download_url" ]]; then
-            # 没有 release，尝试从仓库下载 install.sh 旁的二进制
-            warn "未找到预编译二进制 release。"
-            info "请从以下方式选择："
-            info "  1. 确保源码目录存在且有 Go 环境，脚本会自动编译"
-            info "  2. 手动编译后放到 $BIN_DIR/mpanel"
-            info "  3. 创建 GitHub Release 并附带预编译二进制"
-            die "无法获取 MPanel 二进制"
-        fi
-
-        info "下载 MPanel (${ARCH})..."
+    if [[ -n "$download_url" ]]; then
+        info "从 GitHub Release 下载预编译二进制 (${ARCH})..."
         local tmpfile="/tmp/mpanel-download-$$"
         if ! curl -fsSL -o "$tmpfile" "$download_url"; then
             die "下载失败: $download_url"
         fi
-
+        chmod +x "$tmpfile"
         install -d -m 0755 "$BIN_DIR"
         install -m 0755 "$tmpfile" "$BIN_DIR/mpanel"
         rm -f "$tmpfile"
         ok "二进制下载安装完成"
+    else
+        # Release 不存在时，尝试从源码编译
+        local src_dir="$SCRIPT_DIR"
+        local has_source="false"
+        if [[ -f "$src_dir/go.mod" ]] && [[ -f "$src_dir/cmd/mpanel/main.go" ]]; then
+            has_source="true"
+        fi
+
+        if [[ "$has_source" == "true" ]] && command -v go >/dev/null 2>&1; then
+            info "未找到 Release，检测到源码和 Go，从源码编译..."
+            local tmpbin="/tmp/mpanel-build-$$"
+            if (cd "$src_dir" && CGO_ENABLED=0 go build -trimpath -o "$tmpbin" ./cmd/mpanel); then
+                install -d -m 0755 "$BIN_DIR"
+                install -m 0755 "$tmpbin" "$BIN_DIR/mpanel"
+                rm -f "$tmpbin"
+                ok "从源码编译安装完成"
+            else
+                die "源码编译失败，请检查 Go 环境"
+            fi
+        else
+            warn "未找到预编译二进制 Release，且无源码/Go 环境可供编译。"
+            info "请从以下方式选择："
+            info "  1. 在 GitHub 创建 Release 并上传 mpanel-linux-${ARCH} 二进制"
+            info "  2. 手动编译后放到 $BIN_DIR/mpanel"
+            die "无法获取 MPanel 二进制"
+        fi
     fi
 
     echo ""

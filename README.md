@@ -29,7 +29,7 @@ sudo bash install.sh
 ```
 
 脚本会自动：
-- 从源码编译二进制（需要 Go 1.23+）或下载预编译版本
+- 从 GitHub Release 下载预编译二进制（无需 Go 环境，适合弱性能 VPS）
 - 安装到 `/usr/local/bin/mpanel`
 - 生成 `/etc/mpanel/mpanel.env`（随机密码 + 会话密钥）
 - 创建 `/etc/systemd/system/mpanel.service`（含安全加固）
