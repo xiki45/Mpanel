@@ -387,7 +387,7 @@ do_install() {
         printf "${BOLD}--- MPanel 配置 ---${NC}\n"
 
         # 监听地址
-        local listen_addr="127.0.0.1:8080"
+        local listen_addr="0.0.0.0:8080"
         read -rp "监听地址 [${listen_addr}]: " input
         [[ -n "$input" ]] && listen_addr="$input"
 
@@ -545,7 +545,7 @@ EOF
     echo ""
 
     local listen_addr
-    listen_addr="$(grep -oP '(?<=MPANEL_LISTEN_ADDR=).*' "$CONF_FILE" 2>/dev/null || echo "127.0.0.1:8080")"
+    listen_addr="$(grep -oP '(?<=MPANEL_LISTEN_ADDR=).*' "$CONF_FILE" 2>/dev/null || echo "0.0.0.0:8080")"
     local host_ip
     host_ip="$(hostname -I 2>/dev/null | awk '{print $1}' || echo 'localhost')"
 

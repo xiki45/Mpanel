@@ -96,20 +96,22 @@ Root 系统级安装的 service 以 root 运行，因为需要执行 `systemctl`
 
 ## TLS 反向代理
 
-MPanel 默认只监听 `127.0.0.1:8080`。不要直接暴露 HTTP 端口到公网。安装 Caddy 后，将 `deploy/Caddyfile` 中的域名替换为真实域名，并确保 DNS 已指向 VPS：
+MPanel 默认监听 `0.0.0.0:8080`（对所有接口开放）。**不要直接暴露 HTTP 端口到公网**，务必通过反向代理加 TLS 访问。安装 Caddy 后，将 `deploy/Caddyfile` 中的域名替换为真实域名，并确保 DNS 已指向 VPS：
 
 ```bash
 sudo install -m 0644 deploy/Caddyfile /etc/caddy/Caddyfile
 sudo systemctl reload caddy
 ```
 
-Caddy 自动处理 TLS。MPanel 信任本机反代发送的 `X-Forwarded-Proto` 来设置 Secure Cookie 和执行同源检查，因此面板端口应保持仅本机可达。
+Caddy 自动处理 TLS。MPanel 信任本机反代发送的 `X-Forwarded-Proto` 来设置 Secure Cookie 和执行同源检查。
+
+> **安全提示**：安装脚本默认将 `MPANEL_LISTEN_ADDR` 设为 `0.0.0.0:8080` 以便外部访问。若仅在局域网或本机使用，建议改为 `127.0.0.1:8080` 以降低暴露面，再配合反代反向代理。
 
 ## 配置说明
 
 | 环境变量 | 默认值 | 说明 |
 | --- | --- | --- |
-| `MPANEL_LISTEN_ADDR` | `127.0.0.1:8080` | 面板监听地址 |
+| `MPANEL_LISTEN_ADDR` | `0.0.0.0:8080` | 面板监听地址 |
 | `MPANEL_USERNAME` | `admin` | 登录用户名 |
 | `MPANEL_PASSWORD` | 无，必填 | 登录密码 |
 | `MPANEL_SESSION_SECRET` | 无，至少 32 字节 | Cookie HMAC 密钥 |
