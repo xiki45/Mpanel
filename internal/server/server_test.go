@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -18,13 +19,15 @@ import (
 )
 
 type fakeMihomo struct {
-	setModeErr  error
-	selectErr   error
-	proxies     map[string]mihomo.Proxy
-	proxiesErr  error
-	modeCalls   []string
-	selectCalls []string
-	selectGroup string
+	setModeErr    error
+	selectErr     error
+	proxies       map[string]mihomo.Proxy
+	proxiesErr    error
+	connections   mihomo.Connections
+	connectionsErr error
+	modeCalls     []string
+	selectCalls   []string
+	selectGroup   string
 }
 
 func (fakeMihomo) Overview(context.Context) mihomo.Overview                      { return mihomo.Overview{Online: true} }
@@ -47,6 +50,12 @@ func (f *fakeMihomo) SelectProxy(_ context.Context, group, name string) error {
 	f.selectGroup = group
 	f.selectCalls = append(f.selectCalls, name)
 	return f.selectErr
+}
+func (f *fakeMihomo) Connections(context.Context) (mihomo.Connections, error) {
+	if f.connectionsErr != nil {
+		return mihomo.Connections{}, f.connectionsErr
+	}
+	return f.connections, nil
 }
 
 type fakeService struct{}
@@ -181,6 +190,54 @@ func TestGetProxies(t *testing.T) {
 	}
 	if !strings.Contains(w.Body.String(), `"GLOBAL"`) || !strings.Contains(w.Body.String(), `"node-a"`) {
 		t.Fatalf("proxies missing in response: %s", w.Body.String())
+	}
+}
+
+func TestConnectionsRequireAuth(t *testing.T) {
+	h := testHandler()
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest("GET", "/api/connections", nil))
+	if w.Code != 401 {
+		t.Fatalf("connections without auth got %d, want 401", w.Code)
+	}
+}
+
+func TestGetConnections(t *testing.T) {
+	fake := &fakeMihomo{connections: mihomo.Connections{
+		DownloadTotal: 4096,
+		UploadTotal:   1024,
+		Connections: []mihomo.Connection{{
+			ID: "conn-1", Host: "example.com:443", Type: "HTTP/TCP",
+			Network: "tcp", SourceIP: "192.168.1.2", Rule: "DomainSuffix(example.com)",
+			Chains: []string{"节点选择", "HK-01"}, Upload: 10, Download: 20,
+			Start: "2025-01-01T00:00:00Z",
+		}},
+	}}
+	h := testHandlerWith(fake)
+	w := authedRequest(t, h, "GET", "/api/connections", "")
+	if w.Code != 200 {
+		t.Fatalf("get connections got %d: %s", w.Code, w.Body.String())
+	}
+	body := w.Body.String()
+	for _, want := range []string{`"downloadTotal":4096`, `"uploadTotal":1024`, `"example.com:443"`, `"HTTP/TCP"`, `"节点选择"`, `"conn-1"`} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("connections response missing %s: %s", want, body)
+		}
+	}
+}
+
+func TestGetConnectionsUpstreamErrorNoSecret(t *testing.T) {
+	fake := &fakeMihomo{connectionsErr: errors.New("secret leaked: /etc/mihomo/config.yaml")}
+	h := testHandlerWith(fake)
+	w := authedRequest(t, h, "GET", "/api/connections", "")
+	if w.Code != 502 {
+		t.Fatalf("upstream error got %d, want 502: %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "无法读取连接") {
+		t.Fatalf("expected unified error message: %s", w.Body.String())
+	}
+	if strings.Contains(w.Body.String(), "secret") {
+		t.Fatalf("upstream error leaked secret: %s", w.Body.String())
 	}
 }
 
