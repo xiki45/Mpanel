@@ -76,12 +76,17 @@ func (c *Client) requestEscaped(ctx context.Context, method, path, rawPath strin
 }
 
 func (c *Client) decode(ctx context.Context, path string, dst any) error {
+	return c.decodeLimit(ctx, path, 4<<20, dst)
+}
+
+// decodeLimit is like decode but caps the response body at maxBytes.
+func (c *Client) decodeLimit(ctx context.Context, path string, maxBytes int64, dst any) error {
 	resp, err := c.request(ctx, http.MethodGet, path, nil)
 	if err != nil {
 		return err
 	}
 	defer resp.Body.Close()
-	if err := json.NewDecoder(io.LimitReader(resp.Body, 4<<20)).Decode(dst); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, maxBytes)).Decode(dst); err != nil {
 		return errors.New("invalid response from mihomo")
 	}
 	return nil
@@ -182,6 +187,149 @@ func (c *Client) Proxies(ctx context.Context) (map[string]Proxy, error) {
 		return nil, err
 	}
 	return out.Proxies, nil
+}
+
+// Connection is a single normalized active connection returned by the mihomo
+// /connections API. The fields are shaped for the panel frontend rather than
+// mirroring mihomo's raw metadata structure.
+type Connection struct {
+	ID       string   `json:"id"`
+	Host     string   `json:"host"`
+	Type     string   `json:"type"`
+	Network  string   `json:"network"`
+	SourceIP string   `json:"sourceIP"`
+	Rule     string   `json:"rule"`
+	Chains   []string `json:"chains"`
+	Upload   int64    `json:"upload"`
+	Download int64    `json:"download"`
+	Start    string   `json:"start"`
+}
+
+// Connections is the normalized response of the mihomo /connections API.
+// Truncated is only present when the connection list was cut at the cap.
+type Connections struct {
+	DownloadTotal int64        `json:"downloadTotal"`
+	UploadTotal   int64        `json:"uploadTotal"`
+	Connections   []Connection `json:"connections"`
+	Truncated     bool         `json:"truncated,omitempty"`
+}
+
+// connectionMetadata mirrors mihomo's per-connection metadata object.
+type connectionMetadata struct {
+	Network         string `json:"network"`
+	Type            string `json:"type"`
+	SourceIP        string `json:"sourceIP"`
+	DestinationIP   string `json:"destinationIP"`
+	DestinationPort string `json:"destinationPort"`
+	Host            string `json:"host"`
+	SniffHost       string `json:"sniffHost"`
+}
+
+// rawConnection mirrors the raw shape of one item in mihomo's /connections
+// response before normalization.
+type rawConnection struct {
+	ID          string             `json:"id"`
+	Upload      int64              `json:"upload"`
+	Download    int64              `json:"download"`
+	Start       string             `json:"start"`
+	Chains      []string           `json:"chains"`
+	Rule        string             `json:"rule"`
+	RulePayload string             `json:"rulePayload"`
+	Metadata    connectionMetadata `json:"metadata"`
+}
+
+// rawConnections mirrors the top-level shape of mihomo's /connections response.
+type rawConnections struct {
+	DownloadTotal int64           `json:"downloadTotal"`
+	UploadTotal   int64           `json:"uploadTotal"`
+	Connections   []rawConnection `json:"connections"`
+}
+
+// maxConnections caps the number of connections returned to the panel to bound
+// memory and payload size for large mihomo instances.
+const maxConnections = 10000
+
+// Connections fetches and normalizes the active connections from mihomo's
+// /connections endpoint. The response body may be large, so the read limit is
+// raised to 32 MiB for this endpoint only.
+func (c *Client) Connections(ctx context.Context) (Connections, error) {
+	var out Connections
+	var raw rawConnections
+	if err := c.decodeLimit(ctx, "/connections", 32<<20, &raw); err != nil {
+		return out, err
+	}
+	out.DownloadTotal = raw.DownloadTotal
+	out.UploadTotal = raw.UploadTotal
+	if len(raw.Connections) > maxConnections {
+		raw.Connections = raw.Connections[:maxConnections]
+		out.Truncated = true
+	}
+	out.Connections = make([]Connection, 0, len(raw.Connections))
+	for _, rc := range raw.Connections {
+		out.Connections = append(out.Connections, normalizeConnection(rc))
+	}
+	return out, nil
+}
+
+// normalizeConnection converts a raw mihomo connection into the panel's
+// normalized form, combining host/type/rule from metadata and preserving the
+// original chains order.
+func normalizeConnection(rc rawConnection) Connection {
+	conn := Connection{
+		ID:       rc.ID,
+		Upload:   rc.Upload,
+		Download: rc.Download,
+		Start:    rc.Start,
+	}
+	if rc.Chains == nil {
+		conn.Chains = []string{}
+	} else {
+		conn.Chains = rc.Chains
+	}
+	conn.SourceIP = rc.Metadata.SourceIP
+	conn.Network = rc.Metadata.Network
+	conn.Host = buildHost(rc.Metadata)
+	conn.Type = buildType(rc.Metadata.Type, rc.Metadata.Network)
+	conn.Rule = buildRule(rc.Rule, rc.RulePayload)
+	return conn
+}
+
+// buildHost picks the best available host from a connection's metadata and
+// appends the destination port when present. Host has priority, falling back to
+// sniffHost and then destinationIP.
+func buildHost(m connectionMetadata) string {
+	host := m.Host
+	if host == "" {
+		host = m.SniffHost
+	}
+	if host == "" {
+		host = m.DestinationIP
+	}
+	if m.DestinationPort != "" && host != "" {
+		host = host + ":" + m.DestinationPort
+	}
+	return host
+}
+
+// buildType combines a connection's protocol type with its network, e.g.
+// HTTP/TCP, keeping just the present part when either is missing.
+func buildType(connType, network string) string {
+	if connType != "" && network != "" {
+		return connType + "/" + strings.ToUpper(network)
+	}
+	if connType != "" {
+		return connType
+	}
+	return strings.ToUpper(network)
+}
+
+// buildRule formats a rule and its payload as Rule(Payload), falling back to
+// just the rule when no payload is present.
+func buildRule(rule, payload string) string {
+	if payload != "" && rule != "" {
+		return rule + "(" + payload + ")"
+	}
+	return rule
 }
 
 // SetMode switches the runtime mode (direct|rule|global) via PATCH /configs.
