@@ -100,6 +100,47 @@ deploy/
 - 组名与节点名支持中文、空格、斜杠等特殊字符，统一 URL 编码。
 - 覆盖空列表、mihomo 离线、请求错误与切换中四种状态。
 
+### 4.9 连接查看
+
+新增“连接”页面，展示 mihomo 当前活跃连接。
+
+后端：
+
+- `GET /api/connections` 代理 mihomo `GET /connections`，返回 `{"downloadTotal":int,"uploadTotal":int,"connections":[...]}`。
+- 单条连接字段（后端归一化，前端不解析 mihomo 原始结构）：
+
+```json
+{
+  "id": "uuid",
+  "host": "example.com:443",
+  "type": "HTTP/TCP",
+  "network": "tcp",
+  "sourceIP": "192.168.1.2",
+  "rule": "DomainSuffix(example.com)",
+  "chains": ["节点选择", "HK-01"],
+  "upload": 1024,
+  "download": 4096,
+  "start": "2025-01-01T00:00:00Z"
+}
+```
+
+- `host` 优先取 `metadata.host`（为空时用 `destinationIP`），统一拼上 `destinationPort`；`sniffHost` 可作为补充。
+- `type` 由 `metadata.type` 与 `metadata.network` 组合，例如 `HTTP/TCP`。
+- `rule` 由 `rule` 与 `rulePayload` 组合，`rulePayload` 为空时只返回 `rule`。
+- `chains` 保持 mihomo 顺序原样返回；策略组链路展示由前端负责。
+- mihomo 离线或返回非 2xx 时返回 502 与统一错误 JSON，不泄露 secret 与内部地址。
+- 连接数量可能很大，响应体读取上限提高到 32 MiB，并对返回条数设上限（10000 条，超出截断并返回 `truncated:true`）。
+
+前端：
+
+- 表格列：主机、类型、规则、策略组、上传/下载速度、上传/下载量、连接时间。
+- 每 2 秒轮询；离开页面立即停止轮询。
+- 单条连接速度由前端对相邻两次快照按 `id` 做差分并除以实际间隔计算，首帧显示 `--`；连接消失后清理快照，避免内存增长。
+- 连接时间由 `start` 与本地时间算出持续时长（`1m20s` 形式）。
+- 支持按主机/规则/策略组关键字过滤，支持按下载量、上传量、连接时间排序。
+- 覆盖 loading、empty、offline、error 状态；顶部显示活跃连接数与累计上下行。
+- 所有单元格通过 `textContent` 写入，禁止字符串拼接 HTML。
+
 ## 5. 后端 API
 
 路径可做小幅调整，但语义和保护要求不变：
@@ -121,6 +162,7 @@ GET    /api/listeners
 POST   /api/listeners
 PUT    /api/listeners/{name}
 DELETE /api/listeners/{name}
+GET    /api/connections
 GET    /api/logs/stream
 GET    /healthz
 ```
@@ -157,7 +199,8 @@ MIHOMO_SERVICE=mihomo.service
 - 安静、紧凑的运维工具风格，不做营销首页和装饰性大卡片。
 - 桌面端左侧导航，移动端顶部栏 + 可展开导航。
 - 主色控制在中性灰、蓝绿状态色、红色危险操作，不使用单一深蓝或紫色主题。
-- 页面包括：总览、出站、入站、配置、日志。
+- 页面包括：总览、出站、入站、连接、配置、日志。
+- 连接页在 390px 宽度下表格可横向滚动，不得挤压文本或出现页面级横向溢出。
 - 交互必须有 loading、empty、offline、success、error 状态；按钮执行期间禁用，避免重复提交。
 - 危险动作需要明确确认对话框。
 
@@ -172,6 +215,8 @@ MIHOMO_SERVICE=mihomo.service
 - 热重载失败执行回滚。
 - listener CRUD 保留未知 YAML 字段，拒绝重复名称和非法端口。
 - service action 白名单，无法注入任意命令。
+- `GET /api/connections` 未登录返回 401；正常返回归一化字段；mihomo 离线或非 2xx 返回 502 且响应体不含 secret。
+- 连接归一化逻辑：`host` 为空时回退 `destinationIP`、端口拼接、`type` 组合、`rule` 与 `rulePayload` 组合、`chains` 顺序保持、超过上限时 `truncated:true`。
 
 其他要求：
 
@@ -194,8 +239,10 @@ MIHOMO_SERVICE=mihomo.service
 8. 日志流断开和重连正常，不泄露 mihomo secret。
 9. 总览可切换直连/规则/全局模式，切换过程中有 loading/error 反馈，离线时明确提示。
 10. “出站”页面展示策略组、当前节点与可选节点；点击节点可切换，空/离线/错误/切换中状态均正常呈现，组名与节点名中的中文、空格、斜杠等字符可正确读写。
-11. 桌面宽度 1440px 和移动宽度 390px 下无横向溢出、文本遮挡或不可操作控件。
-12. 所有自动测试、vet 和构建通过，文档可让 Debian/Ubuntu VPS 用户完成部署。
+11. “连接”页面展示主机、类型、规则、策略组、上传/下载速度、上传/下载量与连接时间；轮询期间速度随时间更新，离开页面后停止轮询。
+12. 连接页在无连接、mihomo 离线、请求失败三种情况下分别给出空态、离线提示与错误提示，不出现空白或崩溃。
+13. 桌面宽度 1440px 和移动宽度 390px 下无横向溢出、文本遮挡或不可操作控件。
+14. 所有自动测试、vet 和构建通过，文档可让 Debian/Ubuntu VPS 用户完成部署。
 
 ## 10. 暂不实现
 
