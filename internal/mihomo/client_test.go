@@ -187,6 +187,159 @@ func TestSelectProxyNon2xx(t *testing.T) {
 	}
 }
 
+func TestConnectionsNormalizesFields(t *testing.T) {
+	var auth, method, path string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		auth = r.Header.Get("Authorization")
+		method = r.Method
+		path = r.URL.Path
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{
+			"downloadTotal": 4096,
+			"uploadTotal": 1024,
+			"connections": [{
+				"id": "conn-1",
+				"upload": 10,
+				"download": 20,
+				"start": "2025-01-01T00:00:00Z",
+				"chains": ["节点选择", "HK-01"],
+				"rule": "DomainSuffix",
+				"rulePayload": "example.com",
+				"metadata": {
+					"network": "tcp",
+					"type": "HTTP",
+					"sourceIP": "192.168.1.2",
+					"destinationIP": "10.0.0.1",
+					"destinationPort": "443",
+					"host": "example.com",
+					"sniffHost": ""
+				}
+			}]
+		}`))
+	}))
+	defer server.Close()
+	base, _ := url.Parse(server.URL)
+	c := New(base, "s3cret", time.Second)
+	conns, err := c.Connections(context.Background())
+	if err != nil {
+		t.Fatalf("Connections failed: %v", err)
+	}
+	if method != http.MethodGet || path != "/connections" {
+		t.Fatalf("unexpected request: method=%s path=%s", method, path)
+	}
+	if auth != "Bearer s3cret" {
+		t.Fatalf("unexpected authorization header %q", auth)
+	}
+	if conns.DownloadTotal != 4096 || conns.UploadTotal != 1024 {
+		t.Fatalf("unexpected totals: %+v", conns)
+	}
+	if len(conns.Connections) != 1 {
+		t.Fatalf("unexpected connection count: %d", len(conns.Connections))
+	}
+	got := conns.Connections[0]
+	if got.ID != "conn-1" || got.Host != "example.com:443" || got.Type != "HTTP/TCP" {
+		t.Fatalf("unexpected normalized connection: %+v", got)
+	}
+	if got.Network != "tcp" || got.SourceIP != "192.168.1.2" {
+		t.Fatalf("unexpected network/source: %+v", got)
+	}
+	if got.Rule != "DomainSuffix(example.com)" {
+		t.Fatalf("unexpected rule: %q", got.Rule)
+	}
+	if len(got.Chains) != 2 || got.Chains[0] != "节点选择" || got.Chains[1] != "HK-01" {
+		t.Fatalf("chains order not preserved: %v", got.Chains)
+	}
+	if conns.Truncated {
+		t.Fatal("expected truncated to be false")
+	}
+}
+
+func TestConnectionsHostFallbackToDestinationIP(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"downloadTotal":0,"uploadTotal":0,"connections":[{
+			"id":"c",
+			"metadata":{"network":"udp","type":"","destinationIP":"10.0.0.9","destinationPort":"53"}
+		}]}`))
+	}))
+	defer server.Close()
+	base, _ := url.Parse(server.URL)
+	c := New(base, "", time.Second)
+	conns, err := c.Connections(context.Background())
+	if err != nil {
+		t.Fatalf("Connections failed: %v", err)
+	}
+	got := conns.Connections[0]
+	if got.Host != "10.0.0.9:53" {
+		t.Fatalf("unexpected host fallback: %q", got.Host)
+	}
+	if got.Type != "UDP" {
+		t.Fatalf("unexpected type with empty network type: %q", got.Type)
+	}
+}
+
+func TestConnectionsChainsNullBecomesEmptySlice(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"downloadTotal":0,"uploadTotal":0,"connections":[{"id":"c","chains":null}]}`))
+	}))
+	defer server.Close()
+	base, _ := url.Parse(server.URL)
+	c := New(base, "", time.Second)
+	conns, err := c.Connections(context.Background())
+	if err != nil {
+		t.Fatalf("Connections failed: %v", err)
+	}
+	got := conns.Connections[0]
+	if got.Chains == nil {
+		t.Fatal("chains should not be nil")
+	}
+	if len(got.Chains) != 0 {
+		t.Fatalf("expected empty chains, got %v", got.Chains)
+	}
+}
+
+func TestConnectionsTruncatesAtLimit(t *testing.T) {
+	var b strings.Builder
+	b.WriteString(`{"downloadTotal":0,"uploadTotal":0,"connections":[`)
+	for i := 0; i < maxConnections+5; i++ {
+		if i > 0 {
+			b.WriteString(",")
+		}
+		b.WriteString(`{"id":"c"}`)
+	}
+	b.WriteString(`]}`)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(b.String()))
+	}))
+	defer server.Close()
+	base, _ := url.Parse(server.URL)
+	c := New(base, "", time.Second)
+	conns, err := c.Connections(context.Background())
+	if err != nil {
+		t.Fatalf("Connections failed: %v", err)
+	}
+	if !conns.Truncated {
+		t.Fatal("expected truncated to be true")
+	}
+	if len(conns.Connections) != maxConnections {
+		t.Fatalf("expected %d connections, got %d", maxConnections, len(conns.Connections))
+	}
+}
+
+func TestConnectionsNon2xx(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "boom", 500)
+	}))
+	defer server.Close()
+	base, _ := url.Parse(server.URL)
+	c := New(base, "", time.Second)
+	if _, err := c.Connections(context.Background()); err == nil {
+		t.Fatal("non-2xx connections response accepted")
+	}
+}
+
 func TestLogStreamCancellationClosesUpstream(t *testing.T) {
 	disconnected := make(chan struct{})
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
