@@ -31,6 +31,7 @@ type Mihomo interface {
 	Proxies(context.Context) (map[string]mihomo.Proxy, error)
 	SetMode(context.Context, string) error
 	SelectProxy(context.Context, string, string) error
+	Connections(context.Context) (mihomo.Connections, error)
 }
 
 type Server struct {
@@ -73,6 +74,7 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("GET /api/proxies", s.protected(http.HandlerFunc(s.getProxies)))
 	mux.Handle("PATCH /api/mode", s.protected(s.mutation(http.HandlerFunc(s.patchMode))))
 	mux.Handle("PUT /api/proxies/{group}", s.protected(s.mutation(http.HandlerFunc(s.selectProxy))))
+	mux.Handle("GET /api/connections", s.protected(http.HandlerFunc(s.connections)))
 	mux.Handle("/", http.HandlerFunc(s.static))
 	return securityHeaders(limitBody(mux))
 }
@@ -190,6 +192,17 @@ func (s *Server) getProxies(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	jsonResponse(w, 200, map[string]any{"proxies": proxies})
+}
+
+func (s *Server) connections(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+	conns, err := s.mihomo.Connections(ctx)
+	if err != nil {
+		errorResponse(w, 502, "无法读取连接")
+		return
+	}
+	jsonResponse(w, 200, conns)
 }
 
 func (s *Server) patchMode(w http.ResponseWriter, r *http.Request) {
