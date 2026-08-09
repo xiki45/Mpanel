@@ -5,8 +5,6 @@ log-level: info
 external-controller: 127.0.0.1:9090
 # 与服务环境中的 MIHOMO_API_SECRET 保持一致；部署时替换。
 secret: replace-with-a-random-secret
-profile:
-  store-selected: true
 
 listeners:
   - name: local-socks
