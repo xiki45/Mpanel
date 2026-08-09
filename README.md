@@ -2,7 +2,9 @@
 
 MPanel 是面向个人 Linux VPS 的轻量 mihomo 运维面板。它由单个 Go 进程提供 API 和嵌入式中文界面，不需要 Node.js 或数据库。
 
-功能包括：24 小时签名会话、完整 YAML 安全保存与回滚、最近 5 份备份、listener 可视化增删改（含 VLESS/Reality 结构化编辑），以及入站分享链接与二维码。
+功能聚焦两大板块：**入站配置**（listener 可视化增删改，含 VLESS/Reality 结构化编辑，以及入站分享链接与二维码）和**配置编辑**（完整 YAML 安全保存与回滚、最近 5 份备份、`mihomo -t` 校验与热重载）。同时提供 24 小时签名会话。
+
+策略控制（节点/策略组切换）与连接查看由 **Zashboard**（面向 mihomo 的 Web 仪表盘）承担，可通过 `--install-zashboard` 随本脚本一并安装。
 
 ## 构建
 
@@ -56,6 +58,24 @@ bash install.sh
 sudo bash install.sh --install-mihomo
 ```
 
+### 同时安装 Zashboard（策略控制 / 连接查看）
+
+Zashboard 是纯静态 Web 仪表盘，直接对接 mihomo 的 controller API，负责节点/策略组切换、延迟测速与实时连接查看。它架构无关，不依赖 Go：
+
+```bash
+sudo bash install.sh --install-zashboard
+```
+
+脚本会自动：
+- 从 Zashboard Release 下载静态文件（`dist-no-fonts.zip`）
+- 安装到 `/var/www/zashboard`（root）/ `~/.local/share/zashboard`（普通用户）
+- 创建 `/etc/systemd/system/zashboard.service`（含 `Restart=on-failure` 崩溃自动重启）
+- 启动并启用 zashboard.service，监听 `8081` 端口
+
+安装完成后，在浏览器打开 `http://<服务器IP>:8081`，按界面提示填入 mihomo API 地址（默认 `http://127.0.0.1:9090`）与 secret 即可。若 mihomo 的 `external-controller` 未绑定 `0.0.0.0`，局域网内其他设备将无法访问该 API，请按需调整 mihomo 配置。
+
+> **注意**：`--install-zashboard` 会覆盖已存在的 zashboard web 目录。该选项只安装面板前端，不下载 mihomo 核心。
+
 ### 卸载
 
 ```bash
@@ -66,6 +86,8 @@ sudo bash install.sh --uninstall
 bash install.sh --uninstall
 ```
 
+卸载时会停止并删除 mpanel 服务，并询问是否删除配置。若同时安装了 Zashboard，会一并停止 `zashboard.service` 并询问是否删除其 web 目录。
+
 ### 手动安装（替代方案）
 
 如果不想使用一键脚本，可手动部署：
@@ -75,6 +97,7 @@ bash install.sh --uninstall
 3. 创建 `/etc/mpanel/mpanel.env`，权限设为仅 root 可读，并参照 `.env.example` 配置。
 4. 安装 `deploy/mpanel.service` 到 `/etc/systemd/system/mpanel.service`。
 5. 重载 systemd 并启动服务。
+6. （可选）手动部署 Zashboard：下载其 Release 静态文件解压到 `/var/www/zashboard`，用任意静态服务器托管 `8081` 端口即可；建议创建对应 systemd 服务以保活。
 
 ```bash
 sudo install -m 0755 mpanel /usr/local/bin/mpanel
