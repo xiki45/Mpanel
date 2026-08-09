@@ -15,7 +15,6 @@ import (
 	configmanager "mpanel/internal/config"
 	"mpanel/internal/mihomo"
 	"mpanel/internal/server"
-	"mpanel/internal/service"
 )
 
 func main() {
@@ -27,8 +26,7 @@ func main() {
 	}
 	client := mihomo.New(cfg.MihomoAPIURL, cfg.MihomoAPISecret, 5*time.Second)
 	manager := &configmanager.Manager{Path: cfg.MihomoConfigPath, Validator: configmanager.BinaryValidator{Binary: cfg.MihomoBinary, ConfigDir: filepath.Dir(cfg.MihomoConfigPath), Timeout: cfg.CommandTimeout}, Reloader: client}
-	controller := service.Controller{Unit: cfg.MihomoService, Timeout: cfg.CommandTimeout}
-	handler := server.New(auth.New(cfg.Username, cfg.Password, cfg.SessionSecret), manager, client, controller, logger).Handler()
+	handler := server.New(auth.New(cfg.Username, cfg.Password, cfg.SessionSecret), manager, logger).Handler()
 	httpServer := &http.Server{Addr: cfg.ListenAddr, Handler: handler, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 0, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 1 << 20}
 	go func() {
 		logger.Info("MPanel listening", "address", cfg.ListenAddr)
