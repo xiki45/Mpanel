@@ -33,12 +33,15 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ACTION="install"
 MPANEL_VERSION=""
 INSTALL_MIHOMO="false"
+INSTALL_ZASHBOARD="false"
+ZASHBOARD_PORT="8081"
 
 # 解析参数
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --uninstall) ACTION="uninstall"; shift ;;
         --install-mihomo) INSTALL_MIHOMO="true"; shift ;;
+        --install-zashboard) INSTALL_ZASHBOARD="true"; shift ;;
         --help|-h)
             cat <<'EOF'
 MPanel 一键安装脚本
@@ -50,6 +53,7 @@ MPanel 一键安装脚本
 选项:
   --uninstall        卸载 MPanel
   --install-mihomo   同时下载安装 mihomo（如果尚未安装）
+  --install-zashboard 同时安装 Zashboard 前端并注册 systemd 服务保活
   --help             显示帮助
 EOF
             exit 0 ;;
@@ -85,6 +89,9 @@ if [[ "$(id -u)" -eq 0 ]]; then
     SERVICE_FILE="$SERVICE_DIR/mpanel.service"
     SERVICE_NAME="mpanel.service"
     SYSTEMCTL="systemctl"
+    ZASHBOARD_WEB_DIR="/var/www/zashboard"
+    ZASHBOARD_SERVICE_FILE="$SERVICE_DIR/zashboard.service"
+    ZASHBOARD_SERVICE_NAME="zashboard.service"
 else
     INSTALL_MODE="user"
     MPANEL_USER="$(whoami)"
@@ -96,6 +103,9 @@ else
     SERVICE_FILE="$SERVICE_DIR/mpanel.service"
     SERVICE_NAME="mpanel.service"
     SYSTEMCTL="systemctl --user"
+    ZASHBOARD_WEB_DIR="$HOME/.local/share/zashboard"
+    ZASHBOARD_SERVICE_FILE="$SERVICE_DIR/zashboard.service"
+    ZASHBOARD_SERVICE_NAME="zashboard.service"
 
     # 确保用户 lingering 启用，否则用户级 service 在退出登录后会停止
     info "当前为普通用户安装模式，将启用 lingering 以保证服务持续运行..."
@@ -233,6 +243,148 @@ EOF
 }
 
 # ---------------------------------------------------------------------------
+# Zashboard 安装（纯静态前端，架构无关）
+# ---------------------------------------------------------------------------
+install_zashboard() {
+    info "开始安装 Zashboard..."
+    info "  Web 目录: $ZASHBOARD_WEB_DIR"
+    info "  监听端口: $ZASHBOARD_PORT"
+    echo ""
+
+    # 检查 python3（http.server 依赖）
+    if ! command -v python3 >/dev/null 2>&1; then
+        die "未检测到 python3，Zashboard 服务需要 python3（运行 http.server）。请先安装: apt-get install -y python3"
+    fi
+
+    # 1. 下载
+    local zb_version="latest"
+    local zb_url="https://github.com/Zephyruso/zashboard/releases/latest/download/dist-no-fonts.zip"
+    local tmpzip="/tmp/zashboard-dist-$$.zip"
+
+    info "正在下载 Zashboard 静态文件..."
+    if ! curl -fsSL -o "$tmpzip" "$zb_url"; then
+        rm -f "$tmpzip"
+        die "Zashboard 下载失败: $zb_url"
+    fi
+
+    # 校验 ZIP 魔数
+    if [[ "$(head -c 2 "$tmpzip" 2>/dev/null)" != "PK" ]]; then
+        rm -f "$tmpzip"
+        die "下载的文件不是有效的 ZIP 压缩包"
+    fi
+
+    # 2. 解压
+    local tmpdir="/tmp/zashboard-extract-$$"
+    install -d -m 0755 "$tmpdir"
+
+    if command -v unzip >/dev/null 2>&1; then
+        unzip -q -o "$tmpzip" -d "$tmpdir" || { rm -rf "$tmpdir" "$tmpzip"; die "Zashboard 解压失败（unzip）"; }
+    elif command -v python3 >/dev/null 2>&1; then
+        python3 -c "import zipfile,sys;zipfile.ZipFile(sys.argv[1]).extractall(sys.argv[2])" "$tmpzip" "$tmpdir" || { rm -rf "$tmpdir" "$tmpzip"; die "Zashboard 解压失败（python3）"; }
+    else
+        rm -rf "$tmpdir" "$tmpzip"
+        die "缺少 unzip 或 python3，无法解压 Zashboard"
+    fi
+    rm -f "$tmpzip"
+
+    # dist-no-fonts 包内为 dist 顶层目录，需进入
+    local web_src="$tmpdir"
+    if [[ -d "$tmpdir/dist" ]]; then
+        web_src="$tmpdir/dist"
+    fi
+    if [[ ! -f "$web_src/index.html" ]]; then
+        rm -rf "$tmpdir"
+        die "Zashboard 包结构异常（未找到 index.html）"
+    fi
+
+    # 3. 安装到 web 目录
+    install -d -m 0755 "$ZASHBOARD_WEB_DIR"
+    if [[ -d "$ZASHBOARD_WEB_DIR" ]] && ls "$ZASHBOARD_WEB_DIR"/* >/dev/null 2>&1; then
+        warn "目录 $ZASHBOARD_WEB_DIR 非空，将覆盖安装..."
+    fi
+    rm -rf "${ZASHBOARD_WEB_DIR:?}"/*
+    cp -a "$web_src"/. "$ZASHBOARD_WEB_DIR"/
+    rm -rf "$tmpdir"
+    ok "Zashboard 静态文件已安装: $ZASHBOARD_WEB_DIR"
+
+    # 4. 创建 systemd 服务（保活）
+    info "创建 Zashboard systemd 服务..."
+
+    install -d -m 0755 "$(dirname "$ZASHBOARD_SERVICE_FILE")"
+
+    if [[ "$INSTALL_MODE" == "system" ]]; then
+        cat > "$ZASHBOARD_SERVICE_FILE" <<EOF
+[Unit]
+Description=Zashboard web dashboard (mihomo inbound build)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=${ZASHBOARD_WEB_DIR}
+ExecStart=/usr/bin/python3 -m http.server ${ZASHBOARD_PORT} --bind 0.0.0.0 --directory ${ZASHBOARD_WEB_DIR}
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+EOF
+    else
+        cat > "$ZASHBOARD_SERVICE_FILE" <<EOF
+[Unit]
+Description=Zashboard web dashboard (mihomo inbound build)
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=${ZASHBOARD_WEB_DIR}
+ExecStart=/usr/bin/python3 -m http.server ${ZASHBOARD_PORT} --bind 0.0.0.0 --directory ${ZASHBOARD_WEB_DIR}
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=default.target
+EOF
+    fi
+    chmod 0644 "$ZASHBOARD_SERVICE_FILE"
+
+    $SYSTEMCTL daemon-reload
+    if ! $SYSTEMCTL enable --now "$ZASHBOARD_SERVICE_NAME" 2>/dev/null; then
+        warn "zashboard.service 启用失败，尝试手动启动..."
+        $SYSTEMCTL start "$ZASHBOARD_SERVICE_NAME" 2>/dev/null || true
+    fi
+
+    sleep 2
+
+    if $SYSTEMCTL is-active --quiet "$ZASHBOARD_SERVICE_NAME" 2>/dev/null; then
+        ok "zashboard.service 已启动并运行（端口 $ZASHBOARD_PORT）"
+    else
+        warn "zashboard.service 未正常运行，请检查日志:"
+        warn "  journalctl -u zashboard -n 30 --no-pager"
+    fi
+}
+
+uninstall_zashboard() {
+    if $SYSTEMCTL list-unit-files "$ZASHBOARD_SERVICE_NAME" >/dev/null 2>&1; then
+        $SYSTEMCTL disable --now "$ZASHBOARD_SERVICE_NAME" 2>/dev/null || true
+        ok "已停止并禁用 zashboard.service"
+    fi
+    if [[ -f "$ZASHBOARD_SERVICE_FILE" ]]; then
+        rm -f "$ZASHBOARD_SERVICE_FILE"
+        ok "已删除 service 文件: $ZASHBOARD_SERVICE_FILE"
+    fi
+    if [[ -d "$ZASHBOARD_WEB_DIR" ]]; then
+        read -rp "是否删除 Zashboard 静态目录 $ZASHBOARD_WEB_DIR？[y/N] " confirm
+        if [[ "$confirm" =~ ^[Yy]$ ]]; then
+            rm -rf "$ZASHBOARD_WEB_DIR"
+            ok "已删除目录: $ZASHBOARD_WEB_DIR"
+        else
+            info "保留目录: $ZASHBOARD_WEB_DIR"
+        fi
+    fi
+}
+
+# ---------------------------------------------------------------------------
 # 卸载
 # ---------------------------------------------------------------------------
 do_uninstall() {
@@ -278,6 +430,14 @@ do_uninstall() {
     # 重载 systemd
     $SYSTEMCTL daemon-reload 2>/dev/null || true
 
+    # 卸载 Zashboard（如果存在）
+    if $SYSTEMCTL list-unit-files "$ZASHBOARD_SERVICE_NAME" >/dev/null 2>&1 \
+        || [[ -f "$ZASHBOARD_SERVICE_FILE" ]] \
+        || [[ -d "$ZASHBOARD_WEB_DIR" ]]; then
+        info "检测到 Zashboard 组件，一并卸载..."
+        uninstall_zashboard
+    fi
+
     ok "MPanel 卸载完成"
     exit 0
 }
@@ -295,7 +455,7 @@ do_install() {
     echo ""
 
     # 1. 检查并安装依赖
-    info "[1/6] 检查依赖..."
+    info "[1/7] 检查依赖..."
 
     if ! command -v curl >/dev/null 2>&1; then
         info "安装 curl..."
@@ -311,7 +471,7 @@ do_install() {
     echo ""
 
     # 2. 获取 MPanel 二进制（优先从 Release 下载，避免弱机编译）
-    info "[2/6] 安装 MPanel 二进制..."
+    info "[2/7] 安装 MPanel 二进制..."
 
     local download_url=""
     local api_resp
@@ -363,7 +523,7 @@ do_install() {
     echo ""
 
     # 3. 生成配置
-    info "[3/6] 生成配置文件..."
+    info "[3/7] 生成配置文件..."
 
     install -d -m 0700 "$CONF_DIR"
 
@@ -460,7 +620,7 @@ EOF
     fi
 
     # 4. 创建 systemd service
-    info "[4/6] 配置 systemd..."
+    info "[4/7] 配置 systemd..."
 
     install -d -m 0755 "$SERVICE_DIR"
 
@@ -516,7 +676,7 @@ EOF
     echo ""
 
     # 5. 启动服务
-    info "[5/6] 启动服务..."
+    info "[5/7] 启动服务..."
 
     $SYSTEMCTL daemon-reload
     $SYSTEMCTL enable --now "$SERVICE_NAME" 2>/dev/null || {
@@ -537,8 +697,16 @@ EOF
 
     echo ""
 
+    # 5.5. 安装 Zashboard（可选）
+    if [[ "$INSTALL_ZASHBOARD" == "true" ]]; then
+        info "[6/7] 安装 Zashboard..."
+        echo ""
+        install_zashboard
+        echo ""
+    fi
+
     # 6. 完成提示
-    info "[6/6] 安装完成！"
+    info "[7/7] 安装完成！"
     echo ""
 
     local listen_addr
@@ -559,6 +727,21 @@ EOF
     printf "    查看日志:  ${BOLD}journalctl -u mpanel -f${NC}\n"
     printf "    编辑配置:  ${BOLD}${EDITOR:-nano} ${CONF_FILE}${NC}\n"
     echo ""
+
+    if [[ "$INSTALL_ZASHBOARD" == "true" ]]; then
+        printf "${GREEN}${BOLD}========================================${NC}\n"
+        printf "${GREEN}${BOLD}  Zashboard 已安装！${NC}\n"
+        printf "${GREEN}${BOLD}========================================${NC}\n"
+        echo ""
+        printf "  面板地址:  ${BOLD}http://${host_ip}:${ZASHBOARD_PORT}${NC}\n"
+        echo ""
+        printf "  常用命令:\n"
+        printf "    查看状态:  ${BOLD}$SYSTEMCTL status zashboard${NC}\n"
+        printf "    重启服务:  ${BOLD}$SYSTEMCTL restart zashboard${NC}\n"
+        printf "    查看日志:  ${BOLD}journalctl -u zashboard -f${NC}\n"
+        echo ""
+    fi
+
     if [[ "$INSTALL_MODE" == "system" ]]; then
         printf "  TLS 反向代理（推荐）:\n"
         printf "    安装 Caddy 后编辑 ${BOLD}/etc/caddy/Caddyfile${NC} 指向 127.0.0.1:${listen_addr##*:}\n"
