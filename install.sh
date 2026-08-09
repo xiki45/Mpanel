@@ -108,7 +108,6 @@ fi
 # mihomo 配置默认路径
 MIHOMO_CONFIG_PATH="/etc/mihomo/config.yaml"
 MIHOMO_BINARY="/usr/local/bin/mihomo"
-MIHOMO_SERVICE="mihomo.service"
 MIHOMO_API_URL="http://127.0.0.1:9090"
 MIHOMO_API_SECRET=""
 
@@ -116,7 +115,6 @@ MIHOMO_API_SECRET=""
 if [[ "$INSTALL_MODE" == "user" ]]; then
     MIHOMO_CONFIG_PATH="$HOME/.config/mihomo/config.yaml"
     MIHOMO_BINARY="$HOME/.local/bin/mihomo"
-    MIHOMO_SERVICE="mihomo.service"
 fi
 
 # ---------------------------------------------------------------------------
@@ -446,7 +444,6 @@ MIHOMO_API_URL=${mihomo_url}
 MIHOMO_API_SECRET=${mihomo_secret}
 MIHOMO_CONFIG_PATH=${mihomo_conf}
 MIHOMO_BINARY=${mihomo_bin}
-MIHOMO_SERVICE=${MIHOMO_SERVICE}
 EOF
         chmod 0600 "$CONF_FILE"
         chown "$MPANEL_USER:$MPANEL_GROUP" "$CONF_FILE"
@@ -475,7 +472,7 @@ EOF
         cat > "$SERVICE_FILE" <<EOF
 [Unit]
 Description=MPanel mihomo management panel
-After=network-online.target ${MIHOMO_SERVICE}
+After=network-online.target
 Wants=network-online.target
 
 [Service]
