@@ -1,13 +1,10 @@
 package server
 
 import (
-	"context"
-	"errors"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -15,59 +12,10 @@ import (
 
 	"mpanel/internal/auth"
 	configmanager "mpanel/internal/config"
-	"mpanel/internal/mihomo"
 )
 
-type fakeMihomo struct {
-	setModeErr    error
-	selectErr     error
-	proxies       map[string]mihomo.Proxy
-	proxiesErr    error
-	connections   mihomo.Connections
-	connectionsErr error
-	modeCalls     []string
-	selectCalls   []string
-	selectGroup   string
-}
-
-func (fakeMihomo) Overview(context.Context) mihomo.Overview                      { return mihomo.Overview{Online: true} }
-func (fakeMihomo) Reload(context.Context) error                                  { return nil }
-func (fakeMihomo) StreamLogs(ctx context.Context, emit func([]byte) error) error { return nil }
-func (f *fakeMihomo) Proxies(context.Context) (map[string]mihomo.Proxy, error) {
-	if f.proxiesErr != nil {
-		return nil, f.proxiesErr
-	}
-	if f.proxies == nil {
-		return map[string]mihomo.Proxy{}, nil
-	}
-	return f.proxies, nil
-}
-func (f *fakeMihomo) SetMode(_ context.Context, mode string) error {
-	f.modeCalls = append(f.modeCalls, mode)
-	return f.setModeErr
-}
-func (f *fakeMihomo) SelectProxy(_ context.Context, group, name string) error {
-	f.selectGroup = group
-	f.selectCalls = append(f.selectCalls, name)
-	return f.selectErr
-}
-func (f *fakeMihomo) Connections(context.Context) (mihomo.Connections, error) {
-	if f.connectionsErr != nil {
-		return mihomo.Connections{}, f.connectionsErr
-	}
-	return f.connections, nil
-}
-
-type fakeService struct{}
-
-func (fakeService) Action(context.Context, string) error { return nil }
-
 func testHandler() http.Handler {
-	return testHandlerWith(&fakeMihomo{})
-}
-
-func testHandlerWith(m Mihomo) http.Handler {
-	return New(auth.New("admin", "password", []byte("12345678901234567890123456789012")), &configmanager.Manager{}, m, fakeService{}, slog.New(slog.NewTextHandler(io.Discard, nil))).Handler()
+	return New(auth.New("admin", "password", []byte("12345678901234567890123456789012")), &configmanager.Manager{}, slog.New(slog.NewTextHandler(io.Discard, nil))).Handler()
 }
 func loginCookie(t *testing.T, h http.Handler) *http.Cookie {
 	t.Helper()
@@ -84,7 +32,7 @@ func loginCookie(t *testing.T, h http.Handler) *http.Cookie {
 func TestProtectedRouteAndLoginFailure(t *testing.T) {
 	h := testHandler()
 	w := httptest.NewRecorder()
-	h.ServeHTTP(w, httptest.NewRequest("GET", "/api/overview", nil))
+	h.ServeHTTP(w, httptest.NewRequest("GET", "/api/config", nil))
 	if w.Code != 401 {
 		t.Fatalf("expected 401, got %d", w.Code)
 	}
@@ -97,11 +45,53 @@ func TestProtectedRouteAndLoginFailure(t *testing.T) {
 	}
 }
 
+func TestCoreRoutesRequireAuth(t *testing.T) {
+	h := testHandler()
+	for _, tc := range []struct{ method, path string }{
+		{"GET", "/api/config"},
+		{"GET", "/api/config/backups"},
+		{"GET", "/api/listeners"},
+	} {
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, httptest.NewRequest(tc.method, "http://panel.test"+tc.path, nil))
+		if w.Code != 401 {
+			t.Fatalf("%s %s without auth got %d, want 401", tc.method, tc.path, w.Code)
+		}
+	}
+}
+
+func TestRemovedRoutesReturn404JSON(t *testing.T) {
+	h := testHandler()
+	cookie := loginCookie(t, h)
+	for _, tc := range []struct{ method, path string }{
+		{"GET", "/api/overview"},
+		{"GET", "/api/proxies"},
+		{"PATCH", "/api/mode"},
+		{"GET", "/api/connections"},
+		{"GET", "/api/logs/stream"},
+		{"POST", "/api/service/start"},
+	} {
+		w := httptest.NewRecorder()
+		r := httptest.NewRequest(tc.method, "http://panel.test"+tc.path, strings.NewReader(`{}`))
+		if tc.method != "GET" {
+			r.Header.Set("Content-Type", "application/json")
+		}
+		r.AddCookie(cookie)
+		h.ServeHTTP(w, r)
+		if w.Code != 404 {
+			t.Fatalf("%s %s got %d, want 404", tc.method, tc.path, w.Code)
+		}
+		if !strings.Contains(w.Body.String(), "接口不存在") {
+			t.Fatalf("%s %s did not return a JSON 404: %s", tc.method, tc.path, w.Body.String())
+		}
+	}
+}
+
 func TestMutationOriginProtection(t *testing.T) {
 	h := testHandler()
 	cookie := loginCookie(t, h)
 	w := httptest.NewRecorder()
-	r := httptest.NewRequest("POST", "http://panel.test/api/service/start", strings.NewReader(`{}`))
+	r := httptest.NewRequest("POST", "http://panel.test/api/auth/logout", strings.NewReader(`{}`))
 	r.Header.Set("Content-Type", "application/json")
 	r.Header.Set("Origin", "https://evil.test")
 	r.AddCookie(cookie)
@@ -110,7 +100,7 @@ func TestMutationOriginProtection(t *testing.T) {
 		t.Fatalf("cross-origin mutation got %d", w.Code)
 	}
 	w = httptest.NewRecorder()
-	r = httptest.NewRequest("POST", "http://panel.test/api/service/start", strings.NewReader(`{}`))
+	r = httptest.NewRequest("POST", "http://panel.test/api/auth/logout", strings.NewReader(`{}`))
 	r.Header.Set("Content-Type", "application/json")
 	r.AddCookie(cookie)
 	h.ServeHTTP(w, r)
@@ -148,138 +138,6 @@ func TestLoginOriginProtection(t *testing.T) {
 	}
 }
 
-func authedRequest(t *testing.T, h http.Handler, method, path, body string) *httptest.ResponseRecorder {
-	t.Helper()
-	w := httptest.NewRecorder()
-	r := httptest.NewRequest(method, "http://panel.test"+path, strings.NewReader(body))
-	if body != "" {
-		r.Header.Set("Content-Type", "application/json")
-	}
-	r.AddCookie(loginCookie(t, h))
-	h.ServeHTTP(w, r)
-	return w
-}
-
-func TestMihomoRoutesRequireAuth(t *testing.T) {
-	h := testHandler()
-	for _, tc := range []struct{ method, path string }{
-		{"GET", "/api/proxies"},
-		{"PATCH", "/api/mode"},
-		{"PUT", "/api/proxies/GLOBAL"},
-	} {
-		w := httptest.NewRecorder()
-		r := httptest.NewRequest(tc.method, "http://panel.test"+tc.path, nil)
-		if tc.method != "GET" {
-			r.Header.Set("Content-Type", "application/json")
-		}
-		h.ServeHTTP(w, r)
-		if w.Code != 401 {
-			t.Fatalf("%s %s without auth got %d, want 401", tc.method, tc.path, w.Code)
-		}
-	}
-}
-
-func TestGetProxies(t *testing.T) {
-	fake := &fakeMihomo{proxies: map[string]mihomo.Proxy{
-		"GLOBAL": {Type: "Selector", Now: "node-a", All: []string{"node-a", "node-b"}},
-	}}
-	h := testHandlerWith(fake)
-	w := authedRequest(t, h, "GET", "/api/proxies", "")
-	if w.Code != 200 {
-		t.Fatalf("get proxies got %d: %s", w.Code, w.Body.String())
-	}
-	if !strings.Contains(w.Body.String(), `"GLOBAL"`) || !strings.Contains(w.Body.String(), `"node-a"`) {
-		t.Fatalf("proxies missing in response: %s", w.Body.String())
-	}
-}
-
-func TestConnectionsRequireAuth(t *testing.T) {
-	h := testHandler()
-	w := httptest.NewRecorder()
-	h.ServeHTTP(w, httptest.NewRequest("GET", "/api/connections", nil))
-	if w.Code != 401 {
-		t.Fatalf("connections without auth got %d, want 401", w.Code)
-	}
-}
-
-func TestGetConnections(t *testing.T) {
-	fake := &fakeMihomo{connections: mihomo.Connections{
-		DownloadTotal: 4096,
-		UploadTotal:   1024,
-		Connections: []mihomo.Connection{{
-			ID: "conn-1", Host: "example.com:443", Type: "HTTP/TCP",
-			Network: "tcp", SourceIP: "192.168.1.2", Rule: "DomainSuffix(example.com)",
-			Chains: []string{"节点选择", "HK-01"}, Upload: 10, Download: 20,
-			Start: "2025-01-01T00:00:00Z",
-		}},
-	}}
-	h := testHandlerWith(fake)
-	w := authedRequest(t, h, "GET", "/api/connections", "")
-	if w.Code != 200 {
-		t.Fatalf("get connections got %d: %s", w.Code, w.Body.String())
-	}
-	body := w.Body.String()
-	for _, want := range []string{`"downloadTotal":4096`, `"uploadTotal":1024`, `"example.com:443"`, `"HTTP/TCP"`, `"节点选择"`, `"conn-1"`} {
-		if !strings.Contains(body, want) {
-			t.Fatalf("connections response missing %s: %s", want, body)
-		}
-	}
-}
-
-func TestGetConnectionsUpstreamErrorNoSecret(t *testing.T) {
-	fake := &fakeMihomo{connectionsErr: errors.New("secret leaked: /etc/mihomo/config.yaml")}
-	h := testHandlerWith(fake)
-	w := authedRequest(t, h, "GET", "/api/connections", "")
-	if w.Code != 502 {
-		t.Fatalf("upstream error got %d, want 502: %s", w.Code, w.Body.String())
-	}
-	if !strings.Contains(w.Body.String(), "无法读取连接") {
-		t.Fatalf("expected unified error message: %s", w.Body.String())
-	}
-	if strings.Contains(w.Body.String(), "secret") {
-		t.Fatalf("upstream error leaked secret: %s", w.Body.String())
-	}
-}
-
-func TestPatchModeWhitelist(t *testing.T) {
-	fake := &fakeMihomo{}
-	h := testHandlerWith(fake)
-	for _, mode := range []string{"direct", "rule", "global"} {
-		fake.modeCalls = nil
-		w := authedRequest(t, h, "PATCH", "/api/mode", `{"mode":"`+mode+`"}`)
-		if w.Code != 200 {
-			t.Fatalf("set mode %q got %d: %s", mode, w.Code, w.Body.String())
-		}
-		if len(fake.modeCalls) != 1 || fake.modeCalls[0] != mode {
-			t.Fatalf("mode %q not forwarded: %v", mode, fake.modeCalls)
-		}
-	}
-	for _, mode := range []string{"", "rules", "direct;rm -rf", "Rule"} {
-		w := authedRequest(t, h, "PATCH", "/api/mode", `{"mode":"`+mode+`"}`)
-		if w.Code != 400 {
-			t.Fatalf("invalid mode %q got %d: %s", mode, w.Code, w.Body.String())
-		}
-	}
-}
-
-func TestSelectProxyWithSpecialChars(t *testing.T) {
-	fake := &fakeMihomo{}
-	h := testHandlerWith(fake)
-	// Group and node name with characters that must survive URL handling.
-	group := "My Group/50%"
-	escapedGroup := url.PathEscape(group)
-	w := authedRequest(t, h, "PUT", "/api/proxies/"+escapedGroup, `{"name":"节点 1"}`)
-	if w.Code != 200 {
-		t.Fatalf("select proxy got %d: %s", w.Code, w.Body.String())
-	}
-	if fake.selectGroup != group {
-		t.Fatalf("group not decoded correctly: %q", fake.selectGroup)
-	}
-	if len(fake.selectCalls) != 1 || fake.selectCalls[0] != "节点 1" {
-		t.Fatalf("node name not forwarded: %v", fake.selectCalls)
-	}
-}
-
 func newSharesServer(t *testing.T, configYAML string) http.Handler {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "config.yaml")
@@ -287,7 +145,7 @@ func newSharesServer(t *testing.T, configYAML string) http.Handler {
 		t.Fatal(err)
 	}
 	m := &configmanager.Manager{Path: path}
-	return New(auth.New("admin", "password", []byte("12345678901234567890123456789012")), m, &fakeMihomo{}, fakeService{}, slog.New(slog.NewTextHandler(io.Discard, nil))).Handler()
+	return New(auth.New("admin", "password", []byte("12345678901234567890123456789012")), m, slog.New(slog.NewTextHandler(io.Discard, nil))).Handler()
 }
 
 const sharesVlessConfig = `mode: rule
@@ -312,8 +170,6 @@ listeners:
         - example.com
 `
 
-const privateKeyString = "ejvNUybzw41Ku-82lY1vj5GDW4w_JkpwU7b839vny0g"
-
 func TestListenerShares(t *testing.T) {
 	h := newSharesServer(t, sharesVlessConfig)
 	cookie := loginCookie(t, h)
@@ -335,7 +191,7 @@ func TestListenerShares(t *testing.T) {
 	if !strings.Contains(body, "vless://") || !strings.Contains(body, "pbk=") || !strings.Contains(body, "security=reality") {
 		t.Fatalf("missing vless reality uri: %s", body)
 	}
-	if strings.Contains(body, privateKeyString) {
+	if strings.Contains(body, "ejvNUybzw41Ku-82lY1vj5GDW4w_JkpwU7b839vny0g") {
 		t.Fatal("private key leaked into shares response")
 	}
 	if !strings.Contains(body, "data:image/png;base64,") {
@@ -440,26 +296,5 @@ func TestSecurityHeadersAllowDataImages(t *testing.T) {
 	csp := w.Header().Get("Content-Security-Policy")
 	if !strings.Contains(csp, "img-src 'self' data:") {
 		t.Fatalf("CSP does not allow data: images: %q", csp)
-	}
-}
-
-func TestSelectProxyInvalidPathParam(t *testing.T) {
-	fake := &fakeMihomo{}
-	h := testHandlerWith(fake)
-	// Over-long group (strict > maxPathParam).
-	long := strings.Repeat("a", maxPathParam+1)
-	w := authedRequest(t, h, "PUT", "/api/proxies/"+long, `{"name":"node"}`)
-	if w.Code != 400 {
-		t.Fatalf("over-long group got %d, want 400", w.Code)
-	}
-	// Missing/empty node name.
-	w = authedRequest(t, h, "PUT", "/api/proxies/GLOBAL", `{"name":""}`)
-	if w.Code != 400 {
-		t.Fatalf("empty node name got %d, want 400", w.Code)
-	}
-	// No group segment at all -> route does not match, falls through to 404.
-	w = authedRequest(t, h, "PUT", "/api/proxies/", `{"name":"node"}`)
-	if w.Code != 404 {
-		t.Fatalf("missing group got %d, want 404", w.Code)
 	}
 }
