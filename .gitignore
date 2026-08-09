@@ -3,3 +3,8 @@
 *.out
 .env
 .DS_Store
+
+# 内部文档,不发布
+AGENTS.md
+CHANGELOG.md
+PLAN.md
