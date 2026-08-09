@@ -18,7 +18,6 @@ type Config struct {
 	MihomoAPISecret  string
 	MihomoConfigPath string
 	MihomoBinary     string
-	MihomoService    string
 	CommandTimeout   time.Duration
 }
 
@@ -31,7 +30,6 @@ func Load() (Config, error) {
 		MihomoAPISecret:  os.Getenv("MIHOMO_API_SECRET"),
 		MihomoConfigPath: value("MIHOMO_CONFIG_PATH", "/etc/mihomo/config.yaml"),
 		MihomoBinary:     value("MIHOMO_BINARY", "/usr/local/bin/mihomo"),
-		MihomoService:    value("MIHOMO_SERVICE", "mihomo.service"),
 		CommandTimeout:   15 * time.Second,
 	}
 	var missing []string
@@ -50,9 +48,6 @@ func Load() (Config, error) {
 		return Config{}, errors.New("MIHOMO_API_URL must be an absolute HTTP(S) URL without credentials")
 	}
 	c.MihomoAPIURL = u
-	if strings.TrimSpace(c.MihomoService) == "" || strings.ContainsAny(c.MihomoService, "/\x00") {
-		return Config{}, errors.New("MIHOMO_SERVICE is invalid")
-	}
 	return c, nil
 }
 
