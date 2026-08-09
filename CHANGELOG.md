@@ -4,32 +4,23 @@
 
 ## [Unreleased]
 
-### Added
+### Removed
 
-- 运行模式切换：总览页提供 直连 / 规则 / 全局 三种模式的运行时切换（`PATCH /api/mode`）。
-- 策略组列表：新增「出站」页面，展示 mihomo 策略组、当前出站节点及可选节点（`GET /api/proxies`）。
-- 节点选择：可在策略组内选择出站节点（`PUT /api/proxies/{group}`）。
-- 模式相关的策略组过滤：
-  - 规则模式：隐藏隐式 `GLOBAL` 组，只显示用户配置的策略组。
-  - 直连模式：不显示策略组，提示当前所有流量走直连。
-  - 全局模式：显示全部策略组（含 `GLOBAL`）。
-- 后端新增 `decodeStream`，正确处理 mihomo `/traffic`、`/memory` 流式接口（无流量时不推送数据）。
+- 精简为仅保留核心运维功能：健康检查、登录/会话/登出、入站配置 CRUD、VLESS/Reality/用户编辑、入站分享链接与二维码、YAML 配置读取/保存、配置备份与恢复、校验/原子替换/失败回滚、保存后 mihomo 热重载。
+- 删除运行状态总览（`GET /api/overview`）及 `/version`、`/traffic`、`/memory`、`/configs` 等聚合逻辑。
+- 删除运行模式切换（`PATCH /api/mode`）与出站策略组/节点选择（`GET /api/proxies`、`PUT /api/proxies/{group}`）。
+- 删除连接查看（`GET /api/connections`）。
+- 删除日志 SSE（`GET /api/logs/stream`）。
+- 删除 systemd 服务启停控制（`POST /api/service/{action}`）、`internal/service` 包及 `MIHOMO_SERVICE` 配置契约。
+- `internal/mihomo/client.go` 精简为仅保留 `Reload` 及 `PUT /configs?force=true` 所需的 HTTP 请求代码。
+- 对应删除上述功能的 API 路由、前端页面/板块、Go 测试与文档说明。
 
 ### Changed
 
-- `internal/mihomo/client.go`：新增 `Proxies`、`SetMode`、`SelectProxy` 方法及流式解码支持。
-- `internal/server/server.go`：扩展 `Mihomo` 接口，新增模式与策略组相关受保护路由。
-- 前端 `index.html` / `app.js` / `app.css`：新增模式控件、出站页面及策略组样式。
-- `examples/mihomo-config.yaml`：补充 `profile.store-selected: true`，使 mihomo 重启后保留策略组选择。
-- README / PLAN 文档同步更新。
-
-### Fixed
-
-- 修复 `/api/overview` 因 mihomo `/traffic`、`/memory` 流式接口不关闭连接而阻塞数秒的问题，将总览轮询延迟从约 10 秒降至约 0.4 秒。
-- 修复模式切换失败后下拉框未回滚的问题。
-- 修复 mihomo 离线时模式控件仍可操作的问题。
+- `internal/server/web/index.html` / `app.js` / `app.css`：登录后仅保留「入站」与「配置」两个页面。
+- README / PLAN / CHANGELOG / `.env.example` / `install.sh` / `examples/mihomo-config.yaml` 同步精简。
+- 已删除的 `/api` 路由统一由静态兜底返回 `{"error":"接口不存在"}` JSON 404。
 
 ### Security
 
-- 模式切换与策略组选择均通过 mihomo 控制 API 修改运行时状态，不写回 YAML 配置。
 - mihomo Secret 继续仅由后端持有，不发送到浏览器。
