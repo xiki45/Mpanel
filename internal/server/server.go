@@ -1,11 +1,8 @@
 package server
 
 import (
-	"context"
 	"embed"
 	"encoding/json"
-	"errors"
-	"fmt"
 	"io"
 	"io/fs"
 	"log/slog"
@@ -17,38 +14,22 @@ import (
 
 	"mpanel/internal/auth"
 	configmanager "mpanel/internal/config"
-	"mpanel/internal/mihomo"
 	"mpanel/internal/share"
 )
 
-type Service interface {
-	Action(context.Context, string) error
-}
-type Mihomo interface {
-	Overview(context.Context) mihomo.Overview
-	Reload(context.Context) error
-	StreamLogs(context.Context, func([]byte) error) error
-	Proxies(context.Context) (map[string]mihomo.Proxy, error)
-	SetMode(context.Context, string) error
-	SelectProxy(context.Context, string, string) error
-	Connections(context.Context) (mihomo.Connections, error)
-}
-
 type Server struct {
-	auth    *auth.Manager
-	config  *configmanager.Manager
-	mihomo  Mihomo
-	service Service
-	web     fs.FS
-	logger  *slog.Logger
+	auth   *auth.Manager
+	config *configmanager.Manager
+	web    fs.FS
+	logger *slog.Logger
 }
 
 //go:embed web/*
 var webFiles embed.FS
 
-func New(authManager *auth.Manager, configManager *configmanager.Manager, mihomoClient Mihomo, serviceController Service, logger *slog.Logger) *Server {
+func New(authManager *auth.Manager, configManager *configmanager.Manager, logger *slog.Logger) *Server {
 	web, _ := fs.Sub(webFiles, "web")
-	return &Server{auth: authManager, config: configManager, mihomo: mihomoClient, service: serviceController, web: web, logger: logger}
+	return &Server{auth: authManager, config: configManager, web: web, logger: logger}
 }
 
 func (s *Server) Handler() http.Handler {
@@ -59,8 +40,6 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("POST /api/auth/login", s.mutation(http.HandlerFunc(s.login)))
 	mux.Handle("GET /api/auth/session", s.protected(http.HandlerFunc(s.session)))
 	mux.Handle("POST /api/auth/logout", s.protected(s.mutation(http.HandlerFunc(s.logout))))
-	mux.Handle("GET /api/overview", s.protected(http.HandlerFunc(s.overview)))
-	mux.Handle("POST /api/service/{action}", s.protected(s.mutation(http.HandlerFunc(s.serviceAction))))
 	mux.Handle("GET /api/config", s.protected(http.HandlerFunc(s.getConfig)))
 	mux.Handle("PUT /api/config", s.protected(s.mutation(http.HandlerFunc(s.putConfig))))
 	mux.Handle("GET /api/config/backups", s.protected(http.HandlerFunc(s.backups)))
@@ -70,11 +49,6 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("PUT /api/listeners/{name}", s.protected(s.mutation(http.HandlerFunc(s.updateListener))))
 	mux.Handle("DELETE /api/listeners/{name}", s.protected(s.mutation(http.HandlerFunc(s.deleteListener))))
 	mux.Handle("GET /api/listeners/{name}/shares", s.protected(http.HandlerFunc(s.listenerShares)))
-	mux.Handle("GET /api/logs/stream", s.protected(http.HandlerFunc(s.logs)))
-	mux.Handle("GET /api/proxies", s.protected(http.HandlerFunc(s.getProxies)))
-	mux.Handle("PATCH /api/mode", s.protected(s.mutation(http.HandlerFunc(s.patchMode))))
-	mux.Handle("PUT /api/proxies/{group}", s.protected(s.mutation(http.HandlerFunc(s.selectProxy))))
-	mux.Handle("GET /api/connections", s.protected(http.HandlerFunc(s.connections)))
 	mux.Handle("/", http.HandlerFunc(s.static))
 	return securityHeaders(limitBody(mux))
 }
@@ -112,7 +86,7 @@ func (s *Server) mutation(next http.Handler) http.Handler {
 			errorResponse(w, http.StatusForbidden, "拒绝跨站请求")
 			return
 		}
-		// DELETE and bodyless POST (e.g. service control) need no Content-Type.
+		// DELETE and bodyless POST need no Content-Type.
 		if r.Method != http.MethodDelete && r.ContentLength != 0 {
 			media := strings.ToLower(strings.Split(r.Header.Get("Content-Type"), ";")[0])
 			if media != "application/json" {
@@ -169,103 +143,6 @@ func (s *Server) session(w http.ResponseWriter, r *http.Request) {
 }
 func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
 	s.auth.ClearCookie(w, auth.IsSecure(r))
-	jsonResponse(w, 200, map[string]bool{"ok": true})
-}
-func (s *Server) overview(w http.ResponseWriter, r *http.Request) {
-	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
-	defer cancel()
-	jsonResponse(w, 200, s.mihomo.Overview(ctx))
-}
-
-// allowedModes are the only runtime modes the panel exposes.
-var allowedModes = map[string]bool{"direct": true, "rule": true, "global": true}
-
-// maxPathParam bounds the decoded length of path parameters to avoid abuse.
-const maxPathParam = 128
-
-func (s *Server) getProxies(w http.ResponseWriter, r *http.Request) {
-	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
-	defer cancel()
-	proxies, err := s.mihomo.Proxies(ctx)
-	if err != nil {
-		errorResponse(w, 502, "无法读取代理")
-		return
-	}
-	jsonResponse(w, 200, map[string]any{"proxies": proxies})
-}
-
-func (s *Server) connections(w http.ResponseWriter, r *http.Request) {
-	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
-	defer cancel()
-	conns, err := s.mihomo.Connections(ctx)
-	if err != nil {
-		errorResponse(w, 502, "无法读取连接")
-		return
-	}
-	jsonResponse(w, 200, conns)
-}
-
-func (s *Server) patchMode(w http.ResponseWriter, r *http.Request) {
-	var input struct {
-		Mode string `json:"mode"`
-	}
-	if !decodeJSON(w, r, &input) {
-		return
-	}
-	if !allowedModes[input.Mode] {
-		errorResponse(w, 400, "模式只允许 direct、rule 或 global")
-		return
-	}
-	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
-	defer cancel()
-	if err := s.mihomo.SetMode(ctx, input.Mode); err != nil {
-		errorResponse(w, 502, "切换模式失败")
-		return
-	}
-	jsonResponse(w, 200, map[string]any{"ok": true, "mode": input.Mode})
-}
-
-func (s *Server) selectProxy(w http.ResponseWriter, r *http.Request) {
-	group, err := decodePathParam(w, r, "group", "代理组")
-	if err != nil {
-		return
-	}
-	var input struct {
-		Name string `json:"name"`
-	}
-	if !decodeJSON(w, r, &input) {
-		return
-	}
-	if input.Name == "" || len(input.Name) > maxPathParam {
-		errorResponse(w, 400, "节点名称不能为空且不能过长")
-		return
-	}
-	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
-	defer cancel()
-	if err := s.mihomo.SelectProxy(ctx, group, input.Name); err != nil {
-		errorResponse(w, 502, "切换节点失败")
-		return
-	}
-	jsonResponse(w, 200, map[string]bool{"ok": true})
-}
-
-// decodePathParam validates a path value already percent-decoded by the router
-// (Go's ServeMux unescapes {key} wildcards) and enforces presence and a
-// reasonable length. It writes the error response and returns an error when the
-// value is invalid.
-func decodePathParam(w http.ResponseWriter, r *http.Request, key, label string) (string, error) {
-	value := r.PathValue(key)
-	if value == "" || len(value) > maxPathParam {
-		errorResponse(w, 400, label+"不能为空且不能过长")
-		return "", errors.New("invalid path param")
-	}
-	return value, nil
-}
-func (s *Server) serviceAction(w http.ResponseWriter, r *http.Request) {
-	if err := s.service.Action(r.Context(), r.PathValue("action")); err != nil {
-		errorResponse(w, 400, safeError(err))
-		return
-	}
 	jsonResponse(w, 200, map[string]bool{"ok": true})
 }
 func (s *Server) getConfig(w http.ResponseWriter, r *http.Request) {
@@ -387,34 +264,6 @@ func (s *Server) listenerShares(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	jsonResponse(w, 200, share.Result{Shares: entries})
-}
-
-func (s *Server) logs(w http.ResponseWriter, r *http.Request) {
-	flusher, ok := w.(http.Flusher)
-	if !ok {
-		errorResponse(w, 500, "服务器不支持日志流")
-		return
-	}
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("X-Accel-Buffering", "no")
-	_, _ = io.WriteString(w, "retry: 3000\n\n")
-	flusher.Flush()
-	err := s.mihomo.StreamLogs(r.Context(), func(line []byte) error {
-		select {
-		case <-r.Context().Done():
-			return r.Context().Err()
-		default:
-		}
-		if _, err := fmt.Fprintf(w, "data: %s\n\n", line); err != nil {
-			return err
-		}
-		flusher.Flush()
-		return nil
-	})
-	if err != nil && !errors.Is(err, context.Canceled) {
-		s.logger.Warn("log stream ended", "error", err)
-	}
 }
 
 func (s *Server) static(w http.ResponseWriter, r *http.Request) {
