@@ -4,8 +4,9 @@
 # 适用于 Debian 12 / Ubuntu 22.04+ (amd64 / arm64)
 #
 # 用法:
-#   sudo bash install.sh            # root 系统级安装
-#   bash install.sh                  # 普通用户级安装 (systemd --user)
+#   sudo bash install.sh            # root 系统级安装（最新正式版）
+#   bash install.sh                  # 普通用户级安装
+#   bash install.sh --version v1.0.0 # 指定 release tag 安装
 #   bash install.sh --uninstall       # 卸载
 #
 set -euo pipefail
@@ -31,7 +32,7 @@ die()   { error "$*"; exit 1; }
 # ---------------------------------------------------------------------------
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ACTION="install"
-MPANEL_VERSION=""
+MPANEL_VERSION=""          # 指定 release tag（如 v1.0.0），空则拉取最新正式版
 INSTALL_MIHOMO="false"
 INSTALL_ZASHBOARD="false"
 ZASHBOARD_PORT="8081"
@@ -42,6 +43,17 @@ while [[ $# -gt 0 ]]; do
         --uninstall) ACTION="uninstall"; shift ;;
         --install-mihomo) INSTALL_MIHOMO="true"; shift ;;
         --install-zashboard) INSTALL_ZASHBOARD="true"; shift ;;
+        --version)
+            shift
+            if [[ $# -eq 0 ]]; then
+                die "--version 需要一个版本参数（如 v1.0.0 或 1.0.0）"
+            fi
+            MPANEL_VERSION="$1"; shift
+            # 兼容不带 v 前缀的写法：1.0.0 → v1.0.0；latest 视为默认最新版
+            if [[ "$MPANEL_VERSION" != "latest" && "$MPANEL_VERSION" =~ ^[0-9] ]]; then
+                MPANEL_VERSION="v${MPANEL_VERSION}"
+            fi
+            ;;
         --help|-h)
             cat <<'EOF'
 MPanel 一键安装脚本
@@ -54,6 +66,8 @@ MPanel 一键安装脚本
   --uninstall        卸载 MPanel
   --install-mihomo   同时下载安装 mihomo（如果尚未安装）
   --install-zashboard 同时安装 Zashboard 前端并注册 systemd 服务保活
+  --version <tag>    指定从 GitHub Release 拉取的版本 tag（如 v1.0.0）
+                     不指定时默认拉取最新正式版
   --help             显示帮助
 EOF
             exit 0 ;;
@@ -476,15 +490,24 @@ do_install() {
     local download_url=""
     local api_resp
 
-    # 尝试从 GitHub Releases 获取预编译二进制
-    if api_resp="$(curl -fsSL "https://api.github.com/repos/xiki45/Mpanel/releases/latest" 2>/dev/null)"; then
-        download_url="$(echo "$api_resp" | grep -o "https://[^\"]*mpanel-linux-${ARCH}[^\"]*" | head -1)"
+    if [[ -n "$MPANEL_VERSION" && "$MPANEL_VERSION" != "latest" ]]; then
+        # 指定版本：直接拼固定下载地址（不依赖 API，404 即 tag/资产不存在）
+        download_url="https://github.com/xiki45/Mpanel/releases/download/${MPANEL_VERSION}/mpanel-linux-${ARCH}"
+        info "从 GitHub Release 下载指定版本 ${MPANEL_VERSION} (${ARCH})..."
+    else
+        # 默认：从 GitHub Releases 获取最新正式版
+        info "从 GitHub Release 获取最新正式版 (${ARCH})..."
+        if api_resp="$(curl -fsSL "https://api.github.com/repos/xiki45/Mpanel/releases/latest" 2>/dev/null)"; then
+            download_url="$(echo "$api_resp" | grep -o "https://[^\"]*mpanel-linux-${ARCH}[^\"]*" | head -1)"
+        fi
     fi
 
     if [[ -n "$download_url" ]]; then
-        info "从 GitHub Release 下载预编译二进制 (${ARCH})..."
         local tmpfile="/tmp/mpanel-download-$$"
         if ! curl -fsSL -o "$tmpfile" "$download_url"; then
+            if [[ -n "$MPANEL_VERSION" && "$MPANEL_VERSION" != "latest" ]]; then
+                die "下载失败: Release ${MPANEL_VERSION} 不存在或其 mpanel-linux-${ARCH} 资产缺失（tag 格式如 v1.0.0）"
+            fi
             die "下载失败: $download_url"
         fi
         chmod +x "$tmpfile"
