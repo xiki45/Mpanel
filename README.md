@@ -31,7 +31,7 @@ sudo bash install.sh
 ```
 
 脚本会自动：
-- 从 GitHub Release 下载预编译二进制（无需 Go 环境，适合弱性能 VPS）
+- 从 GitHub Release 下载预编译二进制（默认最新正式版，可用 `--version` 固定版本；无需 Go 环境，适合弱性能 VPS）
 - 安装到 `/usr/local/bin/mpanel`
 - 生成 `/etc/mpanel/mpanel.env`（随机密码 + 会话密钥）
 - 创建 `/etc/systemd/system/mpanel.service`（含安全加固）
@@ -57,6 +57,34 @@ bash install.sh
 ```bash
 sudo bash install.sh --install-mihomo
 ```
+
+```bash
+systemctl status mihomo
+```
+
+```bash
+sudo systemctl start mihomo
+```
+
+```bash
+sudo systemctl stop mihomo
+```
+
+```bash
+sudo systemctl restart mihomo
+```
+
+### 指定版本安装
+
+默认从 GitHub Release 拉取最新正式版；如需固定到某个版本，加 `--version` 指定 release tag：
+
+```bash
+sudo bash install.sh --version v1.0.0   # 指定 tag
+sudo bash install.sh --version 1.0.0    # 自动补 v 前缀，与上面等价
+sudo bash install.sh --version latest   # 等价于默认（最新正式版）
+```
+
+`--version` 直接使用固定的 Release 下载地址，不依赖 GitHub API（不受匿名 API 限流影响）；tag 或对应架构资产不存在时脚本会直接报错退出，不会回退到源码编译。
 
 ### 同时安装 Zashboard（策略控制 / 连接查看）
 
